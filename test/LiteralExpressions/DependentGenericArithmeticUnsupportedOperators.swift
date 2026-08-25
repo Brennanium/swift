@@ -1,0 +1,45 @@
+// Diagnostic boundaries for dependent integer-generic arithmetic.
+// REQUIRES: swift_feature_LiteralExpressions
+// RUN: %target-typecheck-verify-swift -disable-availability-checking -enable-experimental-feature LiteralExpressions
+
+struct Vector<let N: Int, T> {}
+
+// Division and remainder require a nonzero divisor that folds through SE-0531.
+
+func rejectsDependentDivisionDivisor<let n: Int, let m: Int, T>(
+  _ value: Vector<n, T>, _ divisor: Vector<m, T>
+) -> Vector<(n / m), T> { // expected-error {{the divisor in a dependent generic value expression must be a nonzero integer constant expression}}
+  Vector()
+}
+
+func rejectsDependentRemainderDivisor<let n: Int, let m: Int, T>(
+  _ value: Vector<n, T>, _ divisor: Vector<m, T>
+) -> Vector<(n % m), T> { // expected-error {{the divisor in a dependent generic value expression must be a nonzero integer constant expression}}
+  Vector()
+}
+
+func rejectsDivisionByZero<let n: Int, T>(
+  _ value: Vector<n, T>
+) -> Vector<(n / (3 - 3)), T> { // expected-error {{division by zero}}
+  Vector()
+}
+
+func rejectsRemainderByZero<let n: Int, T>(
+  _ value: Vector<n, T>
+) -> Vector<(n % (3 - 3)), T> { // expected-error {{division by zero}}
+  Vector()
+}
+
+func acceptsNestedShift<let n: Int, let m: Int, T>(
+  _ value: Vector<n, T>
+) -> Vector<(n + (m << 1)), T> {
+  Vector()
+}
+
+// By contrast, a complete concrete subtree continues through SE-0531's
+// literal-expression folder before it is combined with the symbolic '+'.
+func acceptsConcreteSE0531Subexpression<let n: Int, T>(
+  _ value: Vector<n, T>
+) -> Vector<(n + (((1 << 5) / 2) - (7 % 3))), T> {
+  Vector()
+}
