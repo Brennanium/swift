@@ -2303,6 +2303,20 @@ ArchetypeType *TypeConverter::getExemplarArchetype(ArchetypeType *t) {
 /// Fold archetypes to unique exemplars. Any archetype with the same
 /// constraints is equivalent for type lowering purposes.
 CanType TypeConverter::getExemplarType(CanType contextTy) {
+  // Dependent arithmetic is a compile-time value expression. It has the same
+  // runtime layout as the value generic parameter representation.
+  if (isa<ArithmeticType>(contextTy)) {
+    contextTy = IGM.Context.getIntType()->getCanonicalType();
+  } else {
+    contextTy = Type(contextTy)
+                    .transformRec([&](TypeBase *type) -> std::optional<Type> {
+                      if (isa<ArithmeticType>(type))
+                        return Type(IGM.Context.getIntType()->getCanonicalType());
+                      return std::nullopt;
+                    })
+                    ->getCanonicalType();
+  }
+
   // FIXME: A generic SILFunctionType should not contain any nondependent
   // archetypes.
   if (isa<SILFunctionType>(contextTy)
@@ -2682,6 +2696,8 @@ const TypeInfo *TypeConverter::convertType(CanType ty) {
     llvm_unreachable("should not be asking for representation of a SILToken");
   case TypeKind::Integer:
     llvm_unreachable("should not be asking for the type info an IntegerType");
+  case TypeKind::Arithmetic:
+    llvm_unreachable("should not lower ArithmeticType directly");
   case TypeKind::Hidden: {
     auto hidden = cast<HiddenType>(ty);
     auto *defining = hidden->getDefiningModule();

@@ -2592,6 +2592,7 @@ private:
     case TypeKind::SILToken:
     case TypeKind::SILMoveOnlyWrapped:
     case TypeKind::Integer:
+    case TypeKind::Arithmetic:
       LLVM_DEBUG(llvm::dbgs() << "Unhandled type: ";
                  DbgTy.getType()->dump(llvm::dbgs()); llvm::dbgs() << "\n");
       MangledName = "<unknown>";

@@ -53,6 +53,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 
 #include "CallEmission.h"
@@ -92,6 +93,8 @@
 
 #include "GenProto.h"
 
+#include <functional>
+
 using namespace swift;
 using namespace irgen;
 
@@ -111,6 +114,19 @@ protected:
   std::vector<MetadataSource> Sources;
 
   FulfillmentMap Fulfillments;
+
+  /// Arithmetic generic expressions are compile-time value expressions. Map
+  /// them to the runtime Int type for metadata and witness-table lookup.
+  CanType mapArithmeticToInt(CanType type) const {
+    auto intTy = IGM.Context.getIntType()->getCanonicalType();
+    Type mapped = Type(type).transformRec([&](TypeBase *ty)
+                                               -> std::optional<Type> {
+      if (isa<ArithmeticType>(ty))
+        return Type(intTy);
+      return std::nullopt;
+    });
+    return mapped->getCanonicalType();
+  }
 
   GenericSignature::RequiredProtocols getRequiredProtocols(Type t) {
     // FIXME: We need to rework this to use archetypes instead of interface
@@ -320,7 +336,28 @@ irgen::enumerateGenericSignatureRequirements(CanGenericSignature signature,
 
 void
 PolymorphicConvention::enumerateRequirements(const RequirementCallback &callback) {
-  return enumerateGenericSignatureRequirements(Generics, callback);
+  return enumerateGenericSignatureRequirements(
+      Generics, [&](GenericRequirement reqt) {
+        switch (reqt.getKind()) {
+        case GenericRequirement::Kind::Shape:
+          callback(reqt);
+          return;
+        case GenericRequirement::Kind::Metadata:
+        case GenericRequirement::Kind::MetadataPack:
+          callback(GenericRequirement::forMetadata(
+              mapArithmeticToInt(reqt.getTypeParameter())));
+          return;
+        case GenericRequirement::Kind::WitnessTable:
+        case GenericRequirement::Kind::WitnessTablePack:
+          callback(GenericRequirement::forWitnessTable(
+              mapArithmeticToInt(reqt.getTypeParameter()), reqt.getProtocol()));
+          return;
+        case GenericRequirement::Kind::Value:
+          callback(GenericRequirement::forValue(
+              mapArithmeticToInt(reqt.getTypeParameter())));
+          return;
+        }
+      });
 }
 
 void PolymorphicConvention::
@@ -336,6 +373,7 @@ void PolymorphicConvention::considerNewTypeSource(IsExact_t isExact,
                                                   MetadataSource::Kind kind,
                                                   CanType type,
                                                   Args... args) {
+  type = mapArithmeticToInt(type);
   if (!Fulfillments.isInterestingTypeForFulfillments(type)) return;
 
   // Prospectively add a source.
@@ -351,6 +389,7 @@ void PolymorphicConvention::considerNewTypeSource(IsExact_t isExact,
 bool PolymorphicConvention::considerType(CanType type, IsExact_t isExact,
                                          unsigned sourceIndex,
                                          MetadataPath &&path) {
+  type = mapArithmeticToInt(type);
   FulfillmentMapCallback callbacks(*this);
   return Fulfillments.searchTypeMetadata(IGM, type, isExact,
                                          MetadataState::Complete, sourceIndex,
@@ -4216,6 +4255,260 @@ irgen::emitGenericRequirementFromSubstitutions(IRGenFunction &IGF,
   CanType depTy = requirement.getTypeParameter();
   CanType argType = depTy.subst(subs)->getCanonicalType();
 
+  // Arithmetic generic expressions use Int metadata at runtime.
+  auto intTy = IGF.IGM.Context.getIntType()->getCanonicalType();
+  argType = Type(argType)
+                .transformRec([&](TypeBase *ty) -> std::optional<Type> {
+                  if (isa<ArithmeticType>(ty))
+                    return Type(intTy);
+                  return std::nullopt;
+                })
+                ->getCanonicalType();
+
+  // A value-generic argument is passed as its runtime Int value. Evaluate the
+  // symbolic arithmetic tree using the values supplied by the caller.
+  std::function<llvm::Value *(CanType)> emitValueGenericArgument;
+  emitValueGenericArgument = [&](CanType valueTy) -> llvm::Value * {
+    if (auto *arithmetic = dyn_cast<ArithmeticType>(valueTy.getPointer())) {
+      auto lhs = emitValueGenericArgument(
+          arithmetic->getLHS()->getCanonicalType());
+      if (!lhs)
+        return nullptr;
+
+      auto lhsExt = IGF.Builder.CreateIntCast(lhs, IGF.IGM.SizeTy,
+                                               /*isSigned=*/true);
+      if (arithmetic->isUnary()) {
+        switch (arithmetic->getOperatorKind()) {
+        case ArithmeticOperatorKind::UnaryPlus:
+          return lhsExt;
+        case ArithmeticOperatorKind::BitwiseNot:
+          return IGF.Builder.CreateNot(lhsExt);
+        case ArithmeticOperatorKind::Negate: {
+          auto *zero = llvm::ConstantInt::get(IGF.IGM.SizeTy, 0);
+          auto *result = IGF.Builder.CreateIntrinsicCall(
+              llvm::Intrinsic::ssub_with_overflow, {IGF.IGM.SizeTy},
+              {zero, lhsExt});
+          auto *overflow = IGF.Builder.CreateExtractValue(result, 1);
+          IGF.emitConditionalTrap(
+              overflow, "integer overflow in arithmetic generic argument");
+          return IGF.Builder.CreateExtractValue(result, 0);
+        }
+        case ArithmeticOperatorKind::Add:
+        case ArithmeticOperatorKind::Subtract:
+        case ArithmeticOperatorKind::Multiply:
+        case ArithmeticOperatorKind::Divide:
+        case ArithmeticOperatorKind::Remainder:
+        case ArithmeticOperatorKind::BitwiseAnd:
+        case ArithmeticOperatorKind::BitwiseOr:
+        case ArithmeticOperatorKind::BitwiseXor:
+        case ArithmeticOperatorKind::LeftShift:
+        case ArithmeticOperatorKind::RightShift:
+        case ArithmeticOperatorKind::MaskingLeftShift:
+        case ArithmeticOperatorKind::MaskingRightShift:
+        case ArithmeticOperatorKind::WrappingAdd:
+        case ArithmeticOperatorKind::WrappingSubtract:
+        case ArithmeticOperatorKind::WrappingMultiply:
+          llvm_unreachable("invalid unary arithmetic operation");
+        }
+      }
+
+      auto rhs = emitValueGenericArgument(
+          arithmetic->getRHS()->getCanonicalType());
+      if (!rhs)
+        return nullptr;
+
+      auto rhsExt = IGF.Builder.CreateIntCast(rhs, IGF.IGM.SizeTy,
+                                               /*isSigned=*/true);
+      switch (arithmetic->getOperatorKind()) {
+      case ArithmeticOperatorKind::Add: {
+        auto *result = IGF.Builder.CreateIntrinsicCall(
+            llvm::Intrinsic::sadd_with_overflow, {IGF.IGM.SizeTy},
+            {lhsExt, rhsExt});
+        auto *overflow = IGF.Builder.CreateExtractValue(result, 1);
+        IGF.emitConditionalTrap(
+            overflow, "integer overflow in arithmetic generic argument");
+        return IGF.Builder.CreateExtractValue(result, 0);
+      }
+      case ArithmeticOperatorKind::Subtract: {
+        auto *result = IGF.Builder.CreateIntrinsicCall(
+            llvm::Intrinsic::ssub_with_overflow, {IGF.IGM.SizeTy},
+            {lhsExt, rhsExt});
+        auto *overflow = IGF.Builder.CreateExtractValue(result, 1);
+        IGF.emitConditionalTrap(
+            overflow, "integer overflow in arithmetic generic argument");
+        return IGF.Builder.CreateExtractValue(result, 0);
+      }
+      case ArithmeticOperatorKind::Multiply: {
+        auto *result = IGF.Builder.CreateIntrinsicCall(
+            llvm::Intrinsic::smul_with_overflow, {IGF.IGM.SizeTy},
+            {lhsExt, rhsExt});
+        auto *overflow = IGF.Builder.CreateExtractValue(result, 1);
+        IGF.emitConditionalTrap(
+            overflow, "integer overflow in arithmetic generic argument");
+        return IGF.Builder.CreateExtractValue(result, 0);
+      }
+      case ArithmeticOperatorKind::WrappingAdd:
+        return IGF.Builder.CreateAdd(lhsExt, rhsExt);
+      case ArithmeticOperatorKind::WrappingSubtract:
+        return IGF.Builder.CreateSub(lhsExt, rhsExt);
+      case ArithmeticOperatorKind::WrappingMultiply:
+        return IGF.Builder.CreateMul(lhsExt, rhsExt);
+      case ArithmeticOperatorKind::Divide:
+      case ArithmeticOperatorKind::Remainder: {
+        auto *zero = llvm::ConstantInt::get(IGF.IGM.SizeTy, 0);
+        auto *minusOne = llvm::ConstantInt::getSigned(IGF.IGM.SizeTy, -1);
+        auto *min = llvm::ConstantInt::get(
+            IGF.IGM.SizeTy,
+            llvm::APInt::getSignedMinValue(IGF.IGM.SizeTy->getBitWidth()));
+        auto *divisionByZero = IGF.Builder.CreateICmpEQ(rhsExt, zero);
+        IGF.emitConditionalTrap(
+            divisionByZero, "division by zero in arithmetic generic argument");
+        auto *divisionOverflow = IGF.Builder.CreateAnd(
+            IGF.Builder.CreateICmpEQ(lhsExt, min),
+            IGF.Builder.CreateICmpEQ(rhsExt, minusOne));
+        IGF.emitConditionalTrap(
+            divisionOverflow, "integer overflow in arithmetic generic argument");
+        switch (arithmetic->getOperatorKind()) {
+        case ArithmeticOperatorKind::Divide:
+          return IGF.Builder.CreateSDiv(lhsExt, rhsExt);
+        case ArithmeticOperatorKind::Remainder:
+          return IGF.Builder.CreateSRem(lhsExt, rhsExt);
+        case ArithmeticOperatorKind::Add:
+        case ArithmeticOperatorKind::Subtract:
+        case ArithmeticOperatorKind::Multiply:
+        case ArithmeticOperatorKind::UnaryPlus:
+        case ArithmeticOperatorKind::BitwiseNot:
+        case ArithmeticOperatorKind::BitwiseAnd:
+        case ArithmeticOperatorKind::BitwiseOr:
+        case ArithmeticOperatorKind::BitwiseXor:
+        case ArithmeticOperatorKind::LeftShift:
+        case ArithmeticOperatorKind::RightShift:
+        case ArithmeticOperatorKind::MaskingLeftShift:
+        case ArithmeticOperatorKind::MaskingRightShift:
+        case ArithmeticOperatorKind::Negate:
+        case ArithmeticOperatorKind::WrappingAdd:
+        case ArithmeticOperatorKind::WrappingSubtract:
+        case ArithmeticOperatorKind::WrappingMultiply:
+          llvm_unreachable("invalid arithmetic operator kind");
+        }
+      }
+      case ArithmeticOperatorKind::BitwiseAnd:
+        return IGF.Builder.CreateAnd(lhsExt, rhsExt);
+      case ArithmeticOperatorKind::BitwiseOr:
+        return IGF.Builder.CreateOr(lhsExt, rhsExt);
+      case ArithmeticOperatorKind::BitwiseXor:
+        return IGF.Builder.CreateXor(lhsExt, rhsExt);
+      case ArithmeticOperatorKind::LeftShift:
+      case ArithmeticOperatorKind::RightShift: {
+        auto *zero = llvm::ConstantInt::get(IGF.IGM.SizeTy, 0);
+        auto *width = llvm::ConstantInt::get(
+            IGF.IGM.SizeTy, IGF.IGM.SizeTy->getBitWidth());
+        auto *negativeWidth = llvm::ConstantInt::getSigned(
+            IGF.IGM.SizeTy, -static_cast<int64_t>(
+                                IGF.IGM.SizeTy->getBitWidth()));
+        auto *mask = llvm::ConstantInt::get(
+            IGF.IGM.SizeTy, IGF.IGM.SizeTy->getBitWidth() - 1);
+
+        // Swift's ordinary shifts are smart shifts. Mask the amounts used by
+        // LLVM's shift instructions so every instruction is well-defined,
+        // then select the specified overshift or reversed-direction result.
+        auto *isNegative = IGF.Builder.CreateICmpSLT(rhsExt, zero);
+        auto *isOvershift = IGF.Builder.CreateICmpSGE(rhsExt, width);
+        auto *isNegativeOvershift =
+            IGF.Builder.CreateICmpSLE(rhsExt, negativeWidth);
+        auto *forwardAmount = IGF.Builder.CreateAnd(rhsExt, mask);
+        auto *reverseAmount = IGF.Builder.CreateAnd(
+            IGF.Builder.CreateSub(zero, rhsExt), mask);
+        auto *left = IGF.Builder.CreateShl(lhsExt, forwardAmount);
+        auto *right = IGF.Builder.CreateAShr(lhsExt, forwardAmount);
+        auto *reverseLeft = IGF.Builder.CreateShl(lhsExt, reverseAmount);
+        auto *reverseRight = IGF.Builder.CreateAShr(lhsExt, reverseAmount);
+        auto *signFill = IGF.Builder.CreateAShr(
+            lhsExt, llvm::ConstantInt::get(IGF.IGM.SizeTy,
+                                            IGF.IGM.SizeTy->getBitWidth() - 1));
+        switch (arithmetic->getOperatorKind()) {
+        case ArithmeticOperatorKind::LeftShift: {
+          auto *shifted = IGF.Builder.CreateSelect(isNegative, reverseRight,
+                                                    left);
+          auto *overshift = IGF.Builder.CreateSelect(isNegative, signFill,
+                                                      zero);
+          auto *outOfRange = IGF.Builder.CreateOr(isOvershift,
+                                                   isNegativeOvershift);
+          return IGF.Builder.CreateSelect(outOfRange, overshift, shifted);
+        }
+        case ArithmeticOperatorKind::RightShift: {
+          auto *shifted = IGF.Builder.CreateSelect(isNegative, reverseLeft,
+                                                    right);
+          auto *overshift = IGF.Builder.CreateSelect(isNegative, zero,
+                                                      signFill);
+          auto *outOfRange = IGF.Builder.CreateOr(isOvershift,
+                                                   isNegativeOvershift);
+          return IGF.Builder.CreateSelect(outOfRange, overshift, shifted);
+        }
+        case ArithmeticOperatorKind::Add:
+        case ArithmeticOperatorKind::Subtract:
+        case ArithmeticOperatorKind::Multiply:
+        case ArithmeticOperatorKind::Divide:
+        case ArithmeticOperatorKind::Remainder:
+        case ArithmeticOperatorKind::UnaryPlus:
+        case ArithmeticOperatorKind::BitwiseNot:
+        case ArithmeticOperatorKind::BitwiseAnd:
+        case ArithmeticOperatorKind::BitwiseOr:
+        case ArithmeticOperatorKind::BitwiseXor:
+        case ArithmeticOperatorKind::MaskingLeftShift:
+        case ArithmeticOperatorKind::MaskingRightShift:
+        case ArithmeticOperatorKind::Negate:
+        case ArithmeticOperatorKind::WrappingAdd:
+        case ArithmeticOperatorKind::WrappingSubtract:
+        case ArithmeticOperatorKind::WrappingMultiply:
+          llvm_unreachable("invalid arithmetic operator kind");
+        }
+      }
+      case ArithmeticOperatorKind::MaskingLeftShift:
+      case ArithmeticOperatorKind::MaskingRightShift: {
+        auto *mask = llvm::ConstantInt::get(
+            IGF.IGM.SizeTy, IGF.IGM.SizeTy->getBitWidth() - 1);
+        auto *amount = IGF.Builder.CreateAnd(rhsExt, mask);
+        switch (arithmetic->getOperatorKind()) {
+        case ArithmeticOperatorKind::MaskingLeftShift:
+          return IGF.Builder.CreateShl(lhsExt, amount);
+        case ArithmeticOperatorKind::MaskingRightShift:
+          return IGF.Builder.CreateAShr(lhsExt, amount);
+        case ArithmeticOperatorKind::Add:
+        case ArithmeticOperatorKind::Subtract:
+        case ArithmeticOperatorKind::Multiply:
+        case ArithmeticOperatorKind::Divide:
+        case ArithmeticOperatorKind::Remainder:
+        case ArithmeticOperatorKind::UnaryPlus:
+        case ArithmeticOperatorKind::BitwiseNot:
+        case ArithmeticOperatorKind::BitwiseAnd:
+        case ArithmeticOperatorKind::BitwiseOr:
+        case ArithmeticOperatorKind::BitwiseXor:
+        case ArithmeticOperatorKind::LeftShift:
+        case ArithmeticOperatorKind::RightShift:
+        case ArithmeticOperatorKind::Negate:
+        case ArithmeticOperatorKind::WrappingAdd:
+        case ArithmeticOperatorKind::WrappingSubtract:
+        case ArithmeticOperatorKind::WrappingMultiply:
+          llvm_unreachable("invalid arithmetic operator kind");
+        }
+      }
+      case ArithmeticOperatorKind::UnaryPlus:
+      case ArithmeticOperatorKind::BitwiseNot:
+      case ArithmeticOperatorKind::Negate:
+        llvm_unreachable("unary arithmetic operation");
+      }
+    }
+
+    if (auto integer = valueTy->getAs<IntegerType>()) {
+      auto value = integer->getValue();
+      auto constant = value.zextOrTrunc(IGF.IGM.SizeTy->getBitWidth());
+      return llvm::ConstantInt::get(IGF.IGM.SizeTy, constant);
+    }
+
+    return IGF.emitValueGenericRef(valueTy);
+  };
+
   switch (requirement.getKind()) {
   case GenericRequirement::Kind::Shape:
     return IGF.emitPackShapeExpression(argType);
@@ -4258,7 +4551,7 @@ irgen::emitGenericRequirementFromSubstitutions(IRGenFunction &IGF,
   }
 
   case GenericRequirement::Kind::Value:
-    return IGF.emitValueGenericRef(argType);
+    return emitValueGenericArgument(depTy.subst(subs)->getCanonicalType());
   }
 }
 

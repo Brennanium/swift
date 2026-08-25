@@ -2294,6 +2294,10 @@ namespace {
     UNSUPPORTED_METADATA(InOut)
     UNSUPPORTED_METADATA(Error)
     UNSUPPORTED_METADATA(Integer)
+    MetadataResponse visitArithmeticType(CanArithmeticType type,
+                                         DynamicMetadataRequest request) {
+      return visit(IGF.IGM.Context.getIntType()->getCanonicalType(), request);
+    }
     UNSUPPORTED_METADATA(Hidden)
     UNSUPPORTED_METADATA(SILBlockStorage)
     UNSUPPORTED_METADATA(BuiltinDefaultActorStorage)

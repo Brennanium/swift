@@ -123,6 +123,10 @@ static bool isLeafTypeMetadata(CanType type) {
   case TypeKind::Integer:
     return true;
 
+  // Symbolic arithmetic generic arguments are leaves for metadata lookup.
+  case TypeKind::Arithmetic:
+    return true;
+
   // Hidden types are leaves.
   case TypeKind::Hidden:
     return true;
