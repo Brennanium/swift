@@ -1291,9 +1291,52 @@ RequirementRequest::evaluate(Evaluator &evaluator,
   }
 
   case RequirementReprKind::SameType:
-    return Requirement(RequirementKind::SameType,
-                       resolution->resolveType(reqRepr.getFirstTypeRepr()),
-                       resolution->resolveType(reqRepr.getSecondTypeRepr()));
+    {
+      auto firstType = resolution->resolveType(reqRepr.getFirstTypeRepr());
+      auto secondType = resolution->resolveType(reqRepr.getSecondTypeRepr());
+      auto containsArithmetic = [](Type type) {
+        return type.findIf([](Type component) {
+          return component->is<ArithmeticType>();
+        });
+      };
+      auto containsArithmeticSyntax = [](TypeRepr *typeRepr) {
+        return typeRepr->findIf([](TypeRepr *component) {
+          auto *argument = dyn_cast<GenericArgumentExprTypeRepr>(component);
+          if (!argument)
+            return false;
+
+          class ArithmeticExprFinder : public ASTWalker {
+          public:
+            bool found = false;
+
+            PreWalkResult<Expr *> walkToExprPre(Expr *expr) override {
+              if (isa<SequenceExpr>(expr) || isa<BinaryExpr>(expr) ||
+                  isa<PrefixUnaryExpr>(expr)) {
+                found = true;
+                return Action::Stop();
+              }
+              return Action::Continue(expr);
+            }
+          } finder;
+
+          argument->getOriginalArgExpr()->walk(finder);
+          return finder.found;
+        });
+      };
+      // Diagnose an explicitly written tautology after both sides have been
+      // resolved. Restrict this new warning to requirements involving
+      // arithmetic generic values, so unrelated same-type requirements retain
+      // their existing diagnostic behavior.
+      if (stage == TypeResolutionStage::Interface && !firstType->hasError() &&
+          !secondType->hasError() && firstType->isEqual(secondType) &&
+          (containsArithmetic(firstType) || containsArithmetic(secondType) ||
+           containsArithmeticSyntax(reqRepr.getFirstTypeRepr()) ||
+           containsArithmeticSyntax(reqRepr.getSecondTypeRepr()))) {
+        owner.dc->getASTContext().Diags.diagnose(
+            reqRepr.getSeparatorLoc(), diag::redundant_same_type_requirement);
+      }
+      return Requirement(RequirementKind::SameType, firstType, secondType);
+    }
 
   case RequirementReprKind::LayoutConstraint:
     return Requirement(RequirementKind::Layout,

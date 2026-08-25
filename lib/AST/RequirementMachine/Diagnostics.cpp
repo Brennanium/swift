@@ -40,6 +40,12 @@ static bool shouldSuggestConcreteTypeFixit(
   }
 }
 
+static bool containsArithmeticType(Type type) {
+  return type.findIf([](Type component) {
+    return component->is<ArithmeticType>();
+  });
+}
+
 /// Emit diagnostics for the given \c RequirementErrors.
 ///
 /// \param ctx The AST context in which to emit diagnostics.
@@ -176,6 +182,11 @@ bool swift::rewriting::diagnoseRequirementErrors(
         ctx.Diags.diagnose(loc, diag::requires_same_concrete_type,
                            requirement.getFirstType(),
                            requirement.getSecondType());
+        if (containsArithmeticType(requirement.getFirstType()) ||
+            containsArithmeticType(requirement.getSecondType())) {
+          ctx.Diags.diagnose(
+              loc, diag::arithmetic_generic_arguments_compared_structurally);
+        }
       } else {
         if (conflict->hasError())
           break;
@@ -267,6 +278,11 @@ bool swift::rewriting::diagnoseRequirementErrors(
 
       ctx.Diags.diagnose(loc, diag::invalid_value_generic_same_type,
                          req.getFirstType(), req.getSecondType());
+      if (containsArithmeticType(req.getFirstType()) ||
+          containsArithmeticType(req.getSecondType())) {
+        ctx.Diags.diagnose(
+            loc, diag::arithmetic_generic_arguments_compared_structurally);
+      }
       diagnosedError = true;
       break;
     }
