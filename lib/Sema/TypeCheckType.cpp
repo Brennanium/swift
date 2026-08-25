@@ -65,6 +65,7 @@
 #include "swift/ClangImporter/ClangImporter.h"
 #include "swift/Parse/Lexer.h"
 #include "swift/Sema/SILTypeResolutionContext.h"
+#include "swift/Sema/SyntacticElementTarget.h"
 #include "swift/Strings.h"
 #include "swift/Subsystems.h"
 #include "clang/AST/ASTContext.h"
@@ -1303,6 +1304,9 @@ namespace {
                   Type sugaredFirstType) {
       if (paramType->isValue()) {
         if (secondType->is<IntegerType>())
+          return true;
+
+        if (secondType->is<ArithmeticType>())
           return true;
 
         if (secondType->is<PlaceholderType>())
@@ -6018,6 +6022,382 @@ static SourceLoc findClosureExpr(Expr *expr) {
   return closureFinder.foundLoc;
 }
 
+/// Lower the deliberately small dependent subset of literal expressions that
+/// V1 supported.  This runs before ordinary expression type checking because
+/// generic value parameters are represented as type values in the AST; they
+/// are not runtime `Int` expressions that the literal-expression folder can
+/// evaluate.
+static StringRef getArithmeticOperatorName(Expr *expr) {
+  if (auto *unresolved = dyn_cast<UnresolvedDeclRefExpr>(expr))
+    return unresolved->getName().getBaseIdentifier().str();
+  if (auto *overloaded = dyn_cast<OverloadedDeclRefExpr>(expr)) {
+    if (!overloaded->getDecls().empty())
+      return overloaded->getDecls().front()->getBaseIdentifier().str();
+  }
+  if (auto *declRef = dyn_cast<DeclRefExpr>(expr))
+    return declRef->getDecl()->getBaseIdentifier().str();
+  return {};
+}
+
+/// Avoid speculatively folding an entirely concrete argument here. Those
+/// expressions belong to SE-0531's normal generic-argument path, including
+/// its diagnostics. This lowering is only needed when a value generic
+/// parameter leaves a symbolic remainder.
+static bool containsValueGenericParameterReference(Expr *expr,
+                                                    DeclContext *dc) {
+  class Finder final : public ASTWalker {
+    DeclContext *DC;
+
+  public:
+    bool found = false;
+
+    explicit Finder(DeclContext *dc) : DC(dc) {}
+
+    PreWalkResult<Expr *> walkToExprPre(Expr *expr) override {
+      auto *unresolved = dyn_cast<UnresolvedDeclRefExpr>(expr);
+      if (!unresolved)
+        return Action::Continue(expr);
+
+      auto lookup = TypeChecker::lookupUnqualifiedType(
+          DC, unresolved->getName(), unresolved->getLoc());
+      if (lookup.size() == 1)
+        if (auto *param =
+                dyn_cast<GenericTypeParamDecl>(lookup.front().getValueDecl()))
+          if (param->isValue()) {
+            found = true;
+            return Action::Stop();
+          }
+      return Action::Continue(expr);
+    }
+  };
+
+  Finder finder(dc);
+  expr->walk(finder);
+  return finder.found;
+}
+
+struct DependentArithmeticResult {
+  Type type;
+  bool isDependent;
+  Expr *concreteExpr = nullptr;
+};
+
+static std::optional<Type>
+resolveDependentArithmeticExpr(Expr *expr, DeclContext *dc,
+                               Expr *&unsupportedOperator,
+                               Expr *&unsupportedOperand,
+                               Expr *&unsupportedDivisor,
+                               Expr *&divisionByZero,
+                               bool &failedConstantEvaluation) {
+  unsupportedOperator = nullptr;
+  unsupportedOperand = nullptr;
+  unsupportedDivisor = nullptr;
+  divisionByZero = nullptr;
+  failedConstantEvaluation = false;
+
+  if (!containsValueGenericParameterReference(expr, dc))
+    return std::nullopt;
+
+  auto foldVariableReference = [&](VarDecl *varDecl,
+                                   DeclNameLoc nameLoc)
+      -> std::optional<DependentArithmeticResult> {
+    if (!varDecl->isLet()) {
+      auto diagnostic = diag::const_unknown_default;
+      if (varDecl->isDynamic() || varDecl->isSyntacticallyOverridable())
+        diagnostic = diag::const_opaque_decl_ref;
+      dc->getASTContext().Diags.diagnose(nameLoc.getBaseNameLoc(), diagnostic);
+      failedConstantEvaluation = true;
+      return std::nullopt;
+    }
+
+    auto *reference = new (dc->getASTContext()) DeclRefExpr(
+        ConcreteDeclRef(varDecl), nameLoc, /*implicit=*/true,
+        AccessSemantics::Ordinary, varDecl->getInterfaceType());
+    if (auto *literal = dyn_cast<IntegerLiteralExpr>(
+            foldLiteralExpression(reference, &dc->getASTContext()))) {
+      return DependentArithmeticResult{
+          IntegerType::get(literal->getDigitsText(), literal->isNegative(),
+                           dc->getASTContext()),
+          /*isDependent=*/false, literal};
+    }
+    failedConstantEvaluation = true;
+    return std::nullopt;
+  };
+
+  auto resolveOperand = [&](auto &&self, Expr *operand)
+      -> std::optional<DependentArithmeticResult> {
+    while (auto *paren = dyn_cast<ParenExpr>(operand))
+      operand = paren->getSubExpr();
+
+    if (auto *literal = dyn_cast<IntegerLiteralExpr>(operand)) {
+      return DependentArithmeticResult{
+          IntegerType::get(literal->getDigitsText(), literal->isNegative(),
+                           dc->getASTContext()),
+          /*isDependent=*/false, operand};
+    }
+
+    if (auto *unresolved = dyn_cast<UnresolvedDeclRefExpr>(operand)) {
+      // Expression lookup must take precedence over the type-oriented lookup
+      // used to find an enclosing value generic parameter. A local `let` may
+      // shadow that parameter and retains SE-0531's normal folding behavior.
+      auto valueLookup = TypeChecker::lookupUnqualified(
+          dc, unresolved->getName(), unresolved->getLoc());
+      if (valueLookup.size() == 1) {
+        if (auto *param = dyn_cast<GenericTypeParamDecl>(
+                valueLookup.front().getValueDecl())) {
+          if (param->isValue()) {
+            return DependentArithmeticResult{
+                param->getDeclaredInterfaceType(), /*isDependent=*/true};
+          }
+
+          // A type generic parameter is never a literal-expression operand.
+          return std::nullopt;
+        }
+        if (auto *varDecl = dyn_cast<VarDecl>(
+                valueLookup.front().getValueDecl()))
+          return foldVariableReference(varDecl, unresolved->getNameLoc());
+      }
+
+      // Value generic parameters are currently represented in type lookup in
+      // some dependent contexts. Fall back only when ordinary expression
+      // lookup found no declaration, so it cannot bypass a shadowing value.
+      if (valueLookup.empty()) {
+        auto typeLookup = TypeChecker::lookupUnqualifiedType(
+            dc, unresolved->getName(), unresolved->getLoc());
+        if (typeLookup.size() == 1)
+          if (auto *param = dyn_cast<GenericTypeParamDecl>(
+                  typeLookup.front().getValueDecl()))
+            if (param->isValue())
+              return DependentArithmeticResult{
+                  param->getDeclaredInterfaceType(), /*isDependent=*/true};
+      }
+    }
+
+    if (auto *unary = dyn_cast<PrefixUnaryExpr>(operand)) {
+      auto subexpression = self(self, unary->getOperand());
+      if (!subexpression)
+        return std::nullopt;
+
+      auto operatorName = getArithmeticOperatorName(unary->getFn());
+      if (!subexpression->isDependent) {
+        auto *operatorRef = new (dc->getASTContext()) UnresolvedDeclRefExpr(
+            DeclNameRef(dc->getASTContext().getIdentifier(operatorName)),
+            DeclRefKind::Ordinary, DeclNameLoc());
+        Expr *concreteExpr = PrefixUnaryExpr::create(
+            dc->getASTContext(), operatorRef, subexpression->concreteExpr,
+            Type());
+        if (TypeChecker::typeCheckExpression(concreteExpr, dc)) {
+          if (auto *literal = dyn_cast<IntegerLiteralExpr>(
+                  foldLiteralExpression(concreteExpr, &dc->getASTContext()))) {
+            return DependentArithmeticResult{
+                IntegerType::get(literal->getDigitsText(), literal->isNegative(),
+                                 dc->getASTContext()),
+                /*isDependent=*/false, literal};
+          }
+        }
+        return std::nullopt;
+      }
+
+      auto op = getArithmeticOperatorKind(operatorName, /*isUnary=*/true);
+      if (!op) {
+        unsupportedOperator = unary->getFn();
+        return std::nullopt;
+      }
+
+      // As for binary arithmetic, probe the standard `Int` operation before
+      // lowering. This prevents a user-defined `~` from affecting the
+      // generic-argument language.
+      auto &ctx = dc->getASTContext();
+      auto *literal = IntegerLiteralExpr::createFromUnsigned(
+          ctx, 0, unary->getOperand()->getLoc());
+      auto *operatorRef = new (ctx) UnresolvedDeclRefExpr(
+          DeclNameRef(ctx.getIdentifier(operatorName)), DeclRefKind::Ordinary,
+          DeclNameLoc());
+      Expr *operatorProbe = PrefixUnaryExpr::create(
+          ctx, operatorRef, literal, Type());
+      constraints::SyntacticElementTarget operatorProbeTarget(
+          operatorProbe, dc, CTP_IntGenericParam, ctx.getIntType(),
+          /*isDiscarded=*/false);
+      DiagnosticTransaction diagnostics(ctx.Diags);
+      auto typedOperatorProbe = TypeChecker::typeCheckExpression(
+          operatorProbeTarget, TypeCheckExprOptions(), &diagnostics);
+      diagnostics.abort();
+      auto *operatorApply =
+          typedOperatorProbe
+              ? dyn_cast<ApplyExpr>(typedOperatorProbe->getAsExpr())
+              : nullptr;
+      if (!operatorApply ||
+          !LiteralExprFolding::supportedOperator(operatorApply)) {
+        unsupportedOperator = unary->getFn();
+        return std::nullopt;
+      }
+
+      return DependentArithmeticResult{
+          ArithmeticType::getUnary(subexpression->type, *op,
+                                   dc->getASTContext()),
+          /*isDependent=*/true};
+    }
+
+    if (auto *dot = dyn_cast<UnresolvedDotExpr>(operand)) {
+      if (auto *base = dyn_cast<UnresolvedDeclRefExpr>(dot->getBase())) {
+        auto typeLookup = TypeChecker::lookupUnqualifiedType(
+            dc, base->getName(), base->getLoc());
+        if (typeLookup.size() == 1)
+          if (auto *typeDecl = dyn_cast<TypeDecl>(
+                  typeLookup.front().getValueDecl())) {
+            auto memberLookup = TypeChecker::lookupMember(
+                dc, typeDecl->getDeclaredInterfaceType(), dot->getName(),
+                dot->getLoc());
+            if (memberLookup.size() == 1)
+              if (auto *varDecl = dyn_cast<VarDecl>(
+                      memberLookup.front().getValueDecl()))
+                if (varDecl->isStatic())
+                  return foldVariableReference(varDecl, dot->getNameLoc());
+          }
+      }
+    }
+
+    if (auto *sequence = dyn_cast<SequenceExpr>(operand))
+      return self(self, TypeChecker::foldSequence(sequence, dc));
+
+    auto *binary = dyn_cast<BinaryExpr>(operand);
+    if (!binary) {
+      // SE-0531 permits references to locally-resolved `let` bindings when
+      // their initializers fold to an integer literal. Type-check only this
+      // concrete operand, then delegate its evaluation to the existing
+      // literal-expression folder.
+      Expr *concreteExpr = operand;
+      if (concreteExpr->getType().isNull() &&
+          !TypeChecker::typeCheckExpression(
+              concreteExpr, dc,
+              /*contextualInfo=*/{dc->getASTContext().getIntType(),
+                                   CTP_IntGenericParam}))
+        return std::nullopt;
+
+      if (auto *literal = dyn_cast<IntegerLiteralExpr>(
+              foldLiteralExpression(concreteExpr, &dc->getASTContext()))) {
+        return DependentArithmeticResult{
+            IntegerType::get(literal->getDigitsText(), literal->isNegative(),
+                             dc->getASTContext()),
+            /*isDependent=*/false, literal};
+      }
+      return std::nullopt;
+    }
+
+    auto lhs = self(self, binary->getLHS());
+    auto rhs = self(self, binary->getRHS());
+    if (!lhs || !rhs) {
+      if ((lhs && lhs->isDependent) || (rhs && rhs->isDependent))
+        unsupportedOperand = !lhs ? binary->getLHS() : binary->getRHS();
+      return std::nullopt;
+    }
+
+    // A subtree with no value-generic parameter belongs entirely to SE-0531.
+    // Type-check and fold it before reconnecting it to the symbolic portion of
+    // the expression, so `n + (offset * scale)` becomes `n + 15`.
+    if (!lhs->isDependent && !rhs->isDependent) {
+      auto operatorName = getArithmeticOperatorName(binary->getFn());
+      auto *operatorRef = new (dc->getASTContext()) UnresolvedDeclRefExpr(
+          DeclNameRef(dc->getASTContext().getIdentifier(operatorName)),
+          DeclRefKind::Ordinary, DeclNameLoc());
+      Expr *concreteExpr = BinaryExpr::create(
+          dc->getASTContext(), lhs->concreteExpr, operatorRef,
+          rhs->concreteExpr, /*implicit=*/true);
+      if (TypeChecker::typeCheckExpression(concreteExpr, dc)) {
+        if (auto *literal = dyn_cast<IntegerLiteralExpr>(
+                foldLiteralExpression(concreteExpr, &dc->getASTContext()))) {
+          return DependentArithmeticResult{
+              IntegerType::get(literal->getDigitsText(), literal->isNegative(),
+                               dc->getASTContext()),
+              /*isDependent=*/false, literal};
+        }
+      }
+    }
+
+    auto operatorName = getArithmeticOperatorName(binary->getFn());
+    auto op = getArithmeticOperatorKind(operatorName, /*isUnary=*/false);
+    if (!op) {
+      if (lhs->isDependent || rhs->isDependent)
+        unsupportedOperator = binary->getFn();
+      return std::nullopt;
+    }
+
+    switch (*op) {
+    case ArithmeticOperatorKind::Divide:
+    case ArithmeticOperatorKind::Remainder: {
+      auto *divisor = rhs->type->template getAs<IntegerType>();
+      if (!divisor) {
+        unsupportedDivisor = binary->getRHS();
+        return std::nullopt;
+      }
+      if (divisor->getValue().isZero()) {
+        divisionByZero = binary->getRHS();
+        return std::nullopt;
+      }
+      break;
+    }
+    case ArithmeticOperatorKind::Add:
+    case ArithmeticOperatorKind::Subtract:
+    case ArithmeticOperatorKind::Multiply:
+    case ArithmeticOperatorKind::BitwiseAnd:
+    case ArithmeticOperatorKind::BitwiseOr:
+    case ArithmeticOperatorKind::BitwiseXor:
+    case ArithmeticOperatorKind::LeftShift:
+    case ArithmeticOperatorKind::RightShift:
+    case ArithmeticOperatorKind::MaskingLeftShift:
+    case ArithmeticOperatorKind::MaskingRightShift:
+    case ArithmeticOperatorKind::WrappingAdd:
+    case ArithmeticOperatorKind::WrappingSubtract:
+    case ArithmeticOperatorKind::WrappingMultiply:
+      break;
+    case ArithmeticOperatorKind::UnaryPlus:
+    case ArithmeticOperatorKind::BitwiseNot:
+    case ArithmeticOperatorKind::Negate:
+      llvm_unreachable("unary arithmetic operation");
+    }
+
+    // Resolve the operator with representative Int operands before lowering
+    // the expression. This follows SE-0531: only a selected standard-library
+    // integer operator participates, never a user-defined overload that
+    // happens to use the same spelling.
+    auto &ctx = dc->getASTContext();
+    auto *lhsLiteral = IntegerLiteralExpr::createFromUnsigned(
+        ctx, 0, binary->getLHS()->getLoc());
+    auto *rhsLiteral = IntegerLiteralExpr::createFromUnsigned(
+        ctx, 0, binary->getRHS()->getLoc());
+    auto *operatorRef = new (ctx) UnresolvedDeclRefExpr(
+        DeclNameRef(ctx.getIdentifier(operatorName)), DeclRefKind::Ordinary,
+        DeclNameLoc());
+    Expr *operatorProbe = BinaryExpr::create(ctx, lhsLiteral, operatorRef,
+                                             rhsLiteral, /*implicit=*/true);
+    constraints::SyntacticElementTarget operatorProbeTarget(
+        operatorProbe, dc, CTP_IntGenericParam, ctx.getIntType(),
+        /*isDiscarded=*/false);
+    DiagnosticTransaction diagnostics(ctx.Diags);
+    auto typedOperatorProbe = TypeChecker::typeCheckExpression(
+        operatorProbeTarget, TypeCheckExprOptions(), &diagnostics);
+    diagnostics.abort();
+    auto *operatorApply =
+        typedOperatorProbe
+            ? dyn_cast<ApplyExpr>(typedOperatorProbe->getAsExpr())
+            : nullptr;
+    if (!operatorApply ||
+        !LiteralExprFolding::supportedOperator(operatorApply)) {
+      unsupportedOperator = binary->getFn();
+      return std::nullopt;
+    }
+
+    return DependentArithmeticResult{
+        ArithmeticType::get(lhs->type, rhs->type, *op, dc->getASTContext()),
+        lhs->isDependent || rhs->isDependent};
+  };
+
+  auto result = resolveOperand(resolveOperand, expr);
+  if (!result || !result->isDependent)
+    return std::nullopt;
+  return result->type;
+}
+
 NeverNullType TypeResolver::resolveGenericArgumentExprTypeRepr(
     GenericArgumentExprTypeRepr *repr, DeclContext *dc,
     TypeResolutionOptions options) {
@@ -6064,6 +6444,53 @@ NeverNullType TypeResolver::resolveGenericArgumentExprTypeRepr(
     return resolveType(typeExpr->getTypeRepr(), options);
   else if (auto *intLitExpr = repr->getAsResolvedIntegerLiteralExpr())
     return resolveIntegerLiteralExpr(intLitExpr);
+
+  // Let SE-0531 continue to own all concrete expressions. Only expressions
+  // that retain a generic value parameter are lowered into the V1 symbolic
+  // representation.
+  Expr *unsupportedArithmeticOperator;
+  Expr *unsupportedArithmeticOperand;
+  Expr *unsupportedArithmeticDivisor;
+  Expr *arithmeticDivisionByZero;
+  bool failedDependentConstantEvaluation;
+  if (auto arithmetic = resolveDependentArithmeticExpr(
+          originalValueExpr, dc, unsupportedArithmeticOperator,
+          unsupportedArithmeticOperand, unsupportedArithmeticDivisor,
+          arithmeticDivisionByZero, failedDependentConstantEvaluation))
+    return *arithmetic;
+  else if (failedDependentConstantEvaluation)
+    return failedToResolveValue(diag::nonliteral_integer_expr_generic_value);
+  else if (arithmeticDivisionByZero) {
+    repr->setArgExpr(new (getASTContext()) ErrorExpr(
+        originalValueExpr->getSourceRange(), ErrorType::get(getASTContext()),
+        originalValueExpr));
+    diagnoseInvalid(repr, arithmeticDivisionByZero->getLoc(),
+                    diag::const_divide_by_zero);
+    return ErrorType::get(getASTContext());
+  } else if (unsupportedArithmeticDivisor) {
+    repr->setArgExpr(new (getASTContext()) ErrorExpr(
+        originalValueExpr->getSourceRange(), ErrorType::get(getASTContext()),
+        originalValueExpr));
+    diagnoseInvalid(repr, unsupportedArithmeticDivisor->getLoc(),
+                    diag::dependent_integer_generic_divisor_must_be_nonzero_constant);
+    return ErrorType::get(getASTContext());
+  }
+  else if (unsupportedArithmeticOperator) {
+    repr->setArgExpr(new (getASTContext()) ErrorExpr(
+        originalValueExpr->getSourceRange(), ErrorType::get(getASTContext()),
+        originalValueExpr));
+    diagnoseInvalid(repr, unsupportedArithmeticOperator->getLoc(),
+                    diag::dependent_integer_generic_operator_not_supported,
+                    getArithmeticOperatorName(unsupportedArithmeticOperator));
+    return ErrorType::get(getASTContext());
+  } else if (unsupportedArithmeticOperand) {
+    repr->setArgExpr(new (getASTContext()) ErrorExpr(
+        originalValueExpr->getSourceRange(), ErrorType::get(getASTContext()),
+        originalValueExpr));
+    diagnoseInvalid(repr, unsupportedArithmeticOperand->getLoc(),
+                    diag::dependent_integer_generic_operand_not_supported);
+    return ErrorType::get(getASTContext());
+  }
 
   // For now, crudely diagnose and reject
   // any closures from appearing in these expressions.

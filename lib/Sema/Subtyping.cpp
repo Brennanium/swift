@@ -374,6 +374,7 @@ swift::constraints::getConversionBehavior(Type type) {
   case TypeKind::SILToken:
   case TypeKind::ErrorUnion:
   case TypeKind::Integer:
+  case TypeKind::Arithmetic:
   case TypeKind::Hidden:
     ABORT([&](llvm::raw_ostream &out) {
       out << "Unusual type spotted in constraint system:\n";

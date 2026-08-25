@@ -8121,6 +8121,21 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
       // aren't.
       return SolutionKind::Error;
 
+    case TypeKind::Arithmetic: {
+      auto *lhs = cast<ArithmeticType>(desugar1);
+      auto *rhs = cast<ArithmeticType>(desugar2);
+      if (lhs->getOperatorKind() != rhs->getOperatorKind())
+        return SolutionKind::Error;
+      auto result = matchTypes(lhs->getLHS(), rhs->getLHS(), kind, subflags,
+                               locator);
+      if (result != SolutionKind::Solved)
+        return result;
+      if (lhs->isUnary())
+        return SolutionKind::Solved;
+      return matchTypes(lhs->getRHS(), rhs->getRHS(), kind, subflags,
+                        locator);
+    }
+
     case TypeKind::Hidden:
       // Two HiddenTypes match only if they have the same mangled name.
       if (cast<HiddenType>(desugar1)->getMangledName() ==
@@ -8669,6 +8684,7 @@ ConstraintSystem::simplifyConstructionConstraint(
   case TypeKind::GenericTypeParam:
   case TypeKind::UnboundGeneric:
   case TypeKind::Integer:
+  case TypeKind::Arithmetic:
   case TypeKind::Hidden:
   case TypeKind::Join:
   case TypeKind::Meet:

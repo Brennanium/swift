@@ -8007,6 +8007,7 @@ Expr *ExprRewriter::coerceToType(Expr *expr, Type toType,
   case TypeKind::GenericTypeParam:
   case TypeKind::DependentMember:
   case TypeKind::Integer:
+  case TypeKind::Arithmetic:
   case TypeKind::Hidden:
     break;
   }
@@ -8087,6 +8088,7 @@ Expr *ExprRewriter::coerceToType(Expr *expr, Type toType,
   case TypeKind::PackExpansion:
   case TypeKind::PackElement:
   case TypeKind::Integer:
+  case TypeKind::Arithmetic:
   case TypeKind::Hidden:
     break;
 

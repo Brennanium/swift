@@ -19,6 +19,7 @@
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/DiagnosticsSema.h"
+#include "swift/AST/IntegerArithmetic.h"
 #include "swift/AST/TypeCheckRequests.h"
 #include "swift/Basic/Unreachable.h"
 
@@ -470,15 +471,19 @@ private:
       auto rhsInt = rhsVal->getValue();
       APInt result;
       bool overflow = false;
-      if (operatorIdentifier.is("+"))
-        result = isSigned ? lhsInt.sadd_ov(rhsInt, overflow)
-                          : lhsInt.uadd_ov(rhsInt, overflow);
-      else if (operatorIdentifier.is("-"))
+      if (operatorIdentifier.is("+") || operatorIdentifier.is("*")) {
+        ArithmeticOperatorKind opKind;
+        if (operatorIdentifier.is("+"))
+          opKind = ArithmeticOperatorKind::Add;
+        else
+          opKind = ArithmeticOperatorKind::Multiply;
+        auto evaluation = evaluateIntegerArithmetic(
+            opKind, lhsInt, rhsInt, isSigned, /*detectOverflow=*/true);
+        result = evaluation.value;
+        overflow = evaluation.overflow;
+      } else if (operatorIdentifier.is("-"))
         result = isSigned ? lhsInt.ssub_ov(rhsInt, overflow)
                           : lhsInt.usub_ov(rhsInt, overflow);
-      else if (operatorIdentifier.is("*"))
-        result = isSigned ? lhsInt.smul_ov(rhsInt, overflow)
-                          : lhsInt.umul_ov(rhsInt, overflow);
       else if (operatorIdentifier.is("/")) {
         if (rhsInt == 0)
           return FoldingError(IllegalConstError::DivideByZero, sourceLocation);
@@ -544,28 +549,12 @@ private:
       else if (operatorIdentifier.is("^"))
         result = lhsInt ^ rhsInt;
       else if (isShift) {
-        // Non-masking shifts trap at runtime when the amount is negative or
-        // greater-or-equal to the LHS bit width. Reject both as folding
-        // errors so the result matches Swift's runtime semantics. The
-        // dedicated diagnostics are emitted inline so they can carry the
-        // amount and bit width; return `UpstreamError` to suppress the
-        // generic "not a literal expression" follow-up.
-        if (rhsVal->getIsSigned() && rhsInt.isNegative()) {
-          Ctx.Diags.diagnose(sourceLocation, diag::const_shift_negative);
-          return FoldingError(IllegalConstError::UpstreamError, sourceLocation);
-        }
-        unsigned width = lhsInt.getBitWidth();
-        uint64_t amountValue = rhsInt.getLimitedValue();
-        if (amountValue >= width) {
-          Ctx.Diags.diagnose(sourceLocation, diag::const_shift_out_of_range,
-                             static_cast<unsigned>(amountValue), width);
-          return FoldingError(IllegalConstError::UpstreamError, sourceLocation);
-        }
-        unsigned amount = static_cast<unsigned>(amountValue);
-        if (operatorIdentifier.is("<<"))
-          result = lhsInt.shl(amount);
-        else
-          result = isSigned ? lhsInt.ashr(amount) : lhsInt.lshr(amount);
+        // FixedWidthInteger's ordinary shifts are smart shifts: a negative
+        // amount reverses direction and an overshift has a defined result.
+        result = evaluateIntegerSmartShift(
+            operatorIdentifier.is("<<") ? ArithmeticOperatorKind::LeftShift
+                                          : ArithmeticOperatorKind::RightShift,
+            lhsInt, rhsInt, isSigned, rhsVal->getIsSigned());
       } else
         return FoldingError(IllegalConstError::UnsupportedBinaryOperator,
                             sourceLocation);
@@ -634,18 +623,18 @@ private:
     bool isSigned = isSignedIntegerType(resultType);
 
     SmallString<32> resultStr;
-    // Get the absolute value for a signed integer
-    // because it is represented as a 'negative value' on the resulting
-    // `IntegerLiteralExpr`.
-    if (isSigned)
-      // 'abs()' of a signed type's minimum overflows and stays negative, which
-      // would put a second minus sign in the digits. Widen first, then print
-      // the magnitude unsigned. 'setNegative' below carries the sign.
-      intResult.sext(intResult.getBitWidth() + 1)
-          .abs()
-          .toString(resultStr, 10, /*Signed=*/false);
-    else
+    // IntegerLiteralExpr stores the sign separately from its digits. Widen
+    // before taking the magnitude so that the magnitude of a minimum signed
+    // value (for example, Int.min) is representable without acquiring a
+    // second minus sign in the digit text.
+    if (isSigned) {
+      auto magnitude = intResult.sext(intResult.getBitWidth() + 1);
+      if (intResult.isNegative())
+        magnitude = -magnitude;
+      magnitude.toString(resultStr, 10, /*signed=*/false);
+    } else {
       intResult.toString(resultStr, 10, false);
+    }
 
     auto *newLit = new (Ctx) IntegerLiteralExpr(
         Ctx.getIdentifier(resultStr).str(), foldedExpr->getLoc(),

@@ -850,12 +850,6 @@ ERROR(const_integer_overflow,none,
       "operation results in integer overflow", ())
 ERROR(const_divide_by_zero,none,
       "division by zero", ())
-ERROR(const_shift_negative,none,
-      "negative shift amount is not permitted in a literal expression", ())
-ERROR(const_shift_out_of_range,none,
-      "shift amount %0 is greater than or equal to the %1-bit width of "
-      "the operand in a literal expression",
-      (unsigned, unsigned))
 ERROR(const_unknown_default,none,
       "not supported in a literal expression", ())
 NOTE(const_failed_fold_declref_init,none,
@@ -3739,6 +3733,10 @@ ERROR(unsupported_pack_same_type,none,
       "same-type requirements between packs and concrete types are not yet supported",
       ())
 
+WARNING(redundant_same_type_requirement,none,
+        "same-type requirement is redundant; both sides are already equivalent",
+        ())
+
 ERROR(requires_generic_params_made_equal,none,
       "same-type requirement makes generic parameters %0 and %1 equivalent",
       (Type, Type))
@@ -3761,6 +3759,8 @@ ERROR(recursive_superclass_constraint,none,
       "superclass constraint %0 : %1 is recursive", (Type, Type))
 ERROR(requires_same_concrete_type,none,
       "generic signature requires types %0 and %1 to be the same", (Type, Type))
+NOTE(arithmetic_generic_arguments_compared_structurally,none,
+     "arithmetic generic arguments are equal only when their expression trees have the same operator and ordered operands", ())
 
 WARNING(missing_protocol_refinement, none,
         "protocol %0 should be declared to refine %1 due to a same-type constraint on 'Self'",
@@ -9179,6 +9179,12 @@ ERROR(nonliteral_integer_expr_generic_value,none,
       "generic value must be an integer literal expression", ())
 ERROR(integer_generic_expr_closure_not_supported,none,
       "closures are not supported in generic value literal expressions", ())
+ERROR(dependent_integer_generic_operator_not_supported,none,
+      "operator '%0' is not supported in dependent generic value expressions", (StringRef))
+ERROR(dependent_integer_generic_divisor_must_be_nonzero_constant,none,
+      "the divisor in a dependent generic value expression must be a nonzero integer constant expression", ())
+ERROR(dependent_integer_generic_operand_not_supported,none,
+      "dependent generic value expressions currently support only integer literals and value generic parameters", ())
 
 //===----------------------------------------------------------------------===//
 // MARK: InlineArray
