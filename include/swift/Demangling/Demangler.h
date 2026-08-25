@@ -710,6 +710,7 @@ protected:
                              NodePointer &RetroactiveConformances);
 
   NodePointer demangleIntegerType();
+  NodePointer demangleValueGeneric();
 
   void dump();
 

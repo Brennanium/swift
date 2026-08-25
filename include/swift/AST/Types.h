@@ -8422,6 +8422,58 @@ public:
 };
 DEFINE_EMPTY_CAN_TYPE_WRAPPER(IntegerType, Type)
 
+/// A symbolic arithmetic expression over integer generic arguments.
+///
+/// Literal expression folding reduces concrete expressions to IntegerType
+/// before this node is formed. ArithmeticType therefore represents only the
+/// dependent remainder of an expression such as `N + M` or `~N`.
+class ArithmeticType final : public TypeBase, public llvm::FoldingSetNode {
+  Type LHS;
+  Type RHS;
+  ArithmeticOperatorKind OpKind;
+
+  ArithmeticType(Type lhs, Type rhs, ArithmeticOperatorKind opKind,
+                 const ASTContext *ctx, RecursiveTypeProperties properties)
+      : TypeBase(TypeKind::Arithmetic, ctx, properties), LHS(lhs), RHS(rhs),
+        OpKind(opKind) {}
+
+public:
+  static Type get(Type lhs, Type rhs, ArithmeticOperatorKind opKind,
+                  const ASTContext &ctx);
+  static Type getUnary(Type operand, ArithmeticOperatorKind opKind,
+                       const ASTContext &ctx);
+
+  Type getLHS() const { return LHS; }
+  Type getRHS() const { return RHS; }
+  ArithmeticOperatorKind getOperatorKind() const { return OpKind; }
+  bool isUnary() const {
+    return getArithmeticOperatorInfo(getOperatorKind()).isUnary;
+  }
+
+  StringRef getOperatorSpelling() const {
+    return getArithmeticOperatorInfo(getOperatorKind()).spelling;
+  }
+
+  StringRef getMangledOperator() const {
+    return getArithmeticOperatorInfo(getOperatorKind()).mangling;
+  }
+
+  void Profile(llvm::FoldingSetNodeID &id) const {
+    Profile(id, getLHS(), getRHS(), getOperatorKind());
+  }
+  static void Profile(llvm::FoldingSetNodeID &id, Type lhs, Type rhs,
+                      ArithmeticOperatorKind opKind) {
+    id.AddPointer(lhs.getPointer());
+    id.AddPointer(rhs.getPointer());
+    id.AddInteger(static_cast<unsigned>(opKind));
+  }
+
+  static bool classof(const TypeBase *type) {
+    return type->getKind() == TypeKind::Arithmetic;
+  }
+};
+DEFINE_EMPTY_CAN_TYPE_WRAPPER(ArithmeticType, Type)
+
 /// A placeholder type for a stored-property field whose real type has been
 /// elided from a serialized module because it was imported via an internal
 /// bridging header. The type carries the mangled name of the original type,

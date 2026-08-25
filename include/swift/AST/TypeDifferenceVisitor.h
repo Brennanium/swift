@@ -416,6 +416,15 @@ public:
     return asImpl().visitDifferentTypeStructure(type1, type2);
   }
 
+  bool visitArithmeticType(CanArithmeticType type1, CanArithmeticType type2) {
+    return type1->getOperatorKind() != type2->getOperatorKind() ||
+           visit(type1->getLHS()->getCanonicalType(),
+                 type2->getLHS()->getCanonicalType()) ||
+           (!type1->isUnary() &&
+            visit(type1->getRHS()->getCanonicalType(),
+                  type2->getRHS()->getCanonicalType()));
+  }
+
   bool visitHiddenType(CanHiddenType type1, CanHiddenType type2) {
     return type1->getMangledName() != type2->getMangledName();
   }

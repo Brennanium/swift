@@ -122,6 +122,26 @@ case TypeKind::Id:
     case TypeKind::Meet:
       return t;
 
+    case TypeKind::Arithmetic: {
+      auto *arith = cast<ArithmeticType>(base);
+      Type lhs = doIt(arith->getLHS(), TypePosition::Invariant);
+      if (!lhs)
+        return Type();
+      if (arith->isUnary()) {
+        if (lhs->isEqual(arith->getLHS()))
+          return t;
+        return ArithmeticType::getUnary(lhs, arith->getOperatorKind(),
+                                        arith->getASTContext());
+      }
+      Type rhs = doIt(arith->getRHS(), TypePosition::Invariant);
+      if (!rhs)
+        return Type();
+      if (lhs->isEqual(arith->getLHS()) && rhs->isEqual(arith->getRHS()))
+        return t;
+      return ArithmeticType::get(lhs, rhs, arith->getOperatorKind(),
+                                 arith->getASTContext());
+    }
+
     // BuiltinGenericType subclasses
     case TypeKind::BuiltinBorrow:
     case TypeKind::BuiltinFixedArray: {

@@ -39,6 +39,9 @@ class Traversal : public TypeVisitor<Traversal, bool>
   bool visitPlaceholderType(PlaceholderType *ty) { return false; }
   bool visitBuiltinType(BuiltinType *ty) { return false; }
   bool visitIntegerType(IntegerType *ty) { return false; }
+  bool visitArithmeticType(ArithmeticType *ty) {
+    return doIt(ty->getLHS()) || (!ty->isUnary() && doIt(ty->getRHS()));
+  }
   bool visitHiddenType(HiddenType *ty) { return false; }
   bool visitJoinType(JoinType *ty) { return false; }
   bool visitMeetType(MeetType *ty) { return false; }

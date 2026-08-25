@@ -6458,6 +6458,16 @@ public:
                                   integer->getDigitsText());
   }
 
+  void visitArithmeticType(const ArithmeticType *type) {
+    using namespace decls_block;
+
+    unsigned abbrCode = S.DeclTypeAbbrCodes[ArithmeticTypeLayout::Code];
+    ArithmeticTypeLayout::emitRecord(
+        S.Out, S.ScratchRecord, abbrCode, S.addTypeRef(type->getLHS()),
+        type->isUnary() ? TypeID(0) : S.addTypeRef(type->getRHS()),
+        static_cast<uint8_t>(type->getOperatorKind()));
+  }
+
   void visitHiddenType(const HiddenType *hidden) {
     using namespace decls_block;
 
@@ -6666,6 +6676,7 @@ void Serializer::writeAllDeclsAndTypes() {
   registerDeclTypeAbbr<PackTypeLayout>();
   registerDeclTypeAbbr<SILPackTypeLayout>();
   registerDeclTypeAbbr<IntegerTypeLayout>();
+  registerDeclTypeAbbr<ArithmeticTypeLayout>();
   registerDeclTypeAbbr<HiddenTypeLayout>();
   registerDeclTypeAbbr<InlineArrayTypeLayout>();
 

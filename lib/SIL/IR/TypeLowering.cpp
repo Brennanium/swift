@@ -364,6 +364,7 @@ namespace {
     IMPL(AnyMetatype, Trivial)
     IMPL(Module, Trivial)
     IMPL(Integer, Trivial)
+    IMPL(Arithmetic, Trivial)
     IMPL(Hidden, Trivial)
 
 #undef IMPL
@@ -3661,7 +3662,7 @@ void TypeConverter::verifyTrivialLowering(const TypeLowering &lowering,
           // conformance to BitwiseCopyable (case (3)).
           if (isa<ModuleType>(ty) ||
               isa<SILTokenType>(ty) ||
-              isa<IntegerType>(ty)) {
+              isa<IntegerType>(ty) || isa<ArithmeticType>(ty)) {
             // These types should never appear within aggregates.
             assert(isTopLevel && "aggregate containing marker type!?");
             // If they did, though, they would not justify the aggregate's

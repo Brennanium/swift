@@ -628,6 +628,25 @@ bool NodePrinter::isSimpleType(NodePointer Node) {
     case Node::Kind::DependentGenericParamValueMarker:
     case Node::Kind::CoroFunctionPointer:
     case Node::Kind::DefaultOverride:
+    case Node::Kind::Arithmetic:
+    case Node::Kind::ArithmeticAdd:
+    case Node::Kind::ArithmeticSubtract:
+    case Node::Kind::ArithmeticMultiply:
+    case Node::Kind::ArithmeticDivide:
+    case Node::Kind::ArithmeticRemainder:
+    case Node::Kind::ArithmeticUnaryPlus:
+    case Node::Kind::ArithmeticBitwiseNot:
+    case Node::Kind::ArithmeticBitwiseAnd:
+    case Node::Kind::ArithmeticBitwiseOr:
+    case Node::Kind::ArithmeticBitwiseXor:
+    case Node::Kind::ArithmeticLeftShift:
+    case Node::Kind::ArithmeticRightShift:
+    case Node::Kind::ArithmeticMaskingLeftShift:
+    case Node::Kind::ArithmeticMaskingRightShift:
+    case Node::Kind::ArithmeticNegate:
+    case Node::Kind::ArithmeticWrappingAdd:
+    case Node::Kind::ArithmeticWrappingSubtract:
+    case Node::Kind::ArithmeticWrappingMultiply:
     case Node::Kind::BorrowAccessor:
     case Node::Kind::MutateAccessor:
       return false;
@@ -3562,6 +3581,129 @@ NodePointer NodePrinter::print(NodePointer Node, unsigned depth,
     Printer << signedValue;
     return nullptr;
   }
+  case Node::Kind::ArithmeticAdd:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " + ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticSubtract:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " - ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticMultiply:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " * ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticDivide:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " / ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticRemainder:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " % ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticUnaryPlus:
+    Printer << "(+";
+    print(Node->getChild(0), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticBitwiseNot:
+    Printer << "(~";
+    print(Node->getChild(0), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticNegate:
+    Printer << "(-";
+    print(Node->getChild(0), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticBitwiseAnd:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " & ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticBitwiseOr:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " | ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticBitwiseXor:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " ^ ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticLeftShift:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " << ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticRightShift:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " >> ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticMaskingLeftShift:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " &<< ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticMaskingRightShift:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " &>> ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticWrappingAdd:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " &+ ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticWrappingSubtract:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " &- ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::ArithmeticWrappingMultiply:
+    Printer << "(";
+    print(Node->getChild(0), depth + 1);
+    Printer << " &* ";
+    print(Node->getChild(1), depth + 1);
+    Printer << ")";
+    return nullptr;
+  case Node::Kind::Arithmetic:
+    Printer << "arithmetic generic argument ";
+    return nullptr;
   case Node::Kind::CoroFunctionPointer:
     Printer << "coro function pointer to ";
     return nullptr;

@@ -27,6 +27,7 @@
 #include "llvm/ADT/StringSwitch.h"
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 
 using namespace swift;
 using namespace Demangle;
@@ -4188,18 +4189,132 @@ mangleNonUniqueExtendedExistentialTypeShapeSymbolicReference(Node *node,
 }
 
 ManglingError Remangler::mangleInteger(Node *node, unsigned int depth) {
-  Buffer << "$";
-  mangleIndex(node->getIndex());
+  auto value = node->getIndex();
+  if (value <= std::numeric_limits<int>::max()) {
+    Buffer << "$";
+    mangleIndex(value);
+  } else {
+    Buffer << "$B" << value << "_";
+  }
 
   return ManglingError::Success;
 }
 
 ManglingError Remangler::mangleNegativeInteger(Node *node, unsigned int depth) {
-  Buffer << "$n";
-  mangleIndex(-node->getIndex());
+  auto magnitude = 0 - node->getIndex();
+  if (magnitude <= std::numeric_limits<int>::max()) {
+    Buffer << "$n";
+    mangleIndex(magnitude);
+  } else {
+    Buffer << "$Bn" << magnitude << "_";
+  }
 
   return ManglingError::Success;
 }
+
+ManglingError Remangler::mangleArithmetic(Node *node, unsigned int depth) {
+  DEMANGLER_ASSERT(node->getNumChildren() == 3, node);
+  RETURN_IF_ERROR(mangle(node->getChild(0), depth + 1));
+  RETURN_IF_ERROR(mangle(node->getChild(1), depth + 1));
+  auto op = node->getChild(2)->getText();
+  if (op == "+") Buffer << "$Va";
+  else if (op == "-") Buffer << "$Vs";
+  else if (op == "*") Buffer << "$Vm";
+  else if (op == "/") Buffer << "$Vd";
+  else if (op == "%") Buffer << "$Vr";
+  else if (op == "&") Buffer << "$Vb";
+  else if (op == "|") Buffer << "$Vo";
+  else if (op == "^") Buffer << "$Vx";
+  else if (op == "<<") Buffer << "$Vl";
+  else if (op == ">>") Buffer << "$Vg";
+  else if (op == "&<<") Buffer << "$Vq";
+  else if (op == "&>>") Buffer << "$Vk";
+  else if (op == "&+") Buffer << "$Vw";
+  else if (op == "&-") Buffer << "$Vh";
+  else if (op == "&*") Buffer << "$Vp";
+  else return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
+  return ManglingError::Success;
+}
+
+ManglingError Remangler::mangleArithmeticAdd(Node *node, unsigned int depth) {
+  DEMANGLER_ASSERT(node->getNumChildren() == 2, node);
+  RETURN_IF_ERROR(mangle(node->getChild(0), depth + 1));
+  RETURN_IF_ERROR(mangle(node->getChild(1), depth + 1));
+  Buffer << "$Va";
+  return ManglingError::Success;
+}
+
+ManglingError Remangler::mangleArithmeticSubtract(Node *node,
+                                                  unsigned int depth) {
+  DEMANGLER_ASSERT(node->getNumChildren() == 2, node);
+  RETURN_IF_ERROR(mangle(node->getChild(0), depth + 1));
+  RETURN_IF_ERROR(mangle(node->getChild(1), depth + 1));
+  Buffer << "$Vs";
+  return ManglingError::Success;
+}
+
+ManglingError Remangler::mangleArithmeticMultiply(Node *node,
+                                                  unsigned int depth) {
+  DEMANGLER_ASSERT(node->getNumChildren() == 2, node);
+  RETURN_IF_ERROR(mangle(node->getChild(0), depth + 1));
+  RETURN_IF_ERROR(mangle(node->getChild(1), depth + 1));
+  Buffer << "$Vm";
+  return ManglingError::Success;
+}
+
+ManglingError Remangler::mangleArithmeticDivide(Node *node,
+                                                unsigned int depth) {
+  DEMANGLER_ASSERT(node->getNumChildren() == 2, node);
+  RETURN_IF_ERROR(mangle(node->getChild(0), depth + 1));
+  RETURN_IF_ERROR(mangle(node->getChild(1), depth + 1));
+  Buffer << "$Vd";
+  return ManglingError::Success;
+}
+
+ManglingError Remangler::mangleArithmeticRemainder(Node *node,
+                                                   unsigned int depth) {
+  DEMANGLER_ASSERT(node->getNumChildren() == 2, node);
+  RETURN_IF_ERROR(mangle(node->getChild(0), depth + 1));
+  RETURN_IF_ERROR(mangle(node->getChild(1), depth + 1));
+  Buffer << "$Vr";
+  return ManglingError::Success;
+}
+
+#define MANGLE_UNARY_ARITHMETIC_NODE(NAME, TAG)                               \
+  ManglingError Remangler::mangle##NAME(Node *node, unsigned int depth) {     \
+    DEMANGLER_ASSERT(node->getNumChildren() == 1, node);                       \
+    RETURN_IF_ERROR(mangle(node->getChild(0), depth + 1));                     \
+    Buffer << TAG;                                                             \
+    return ManglingError::Success;                                              \
+  }
+
+MANGLE_UNARY_ARITHMETIC_NODE(ArithmeticBitwiseNot, "$Vn")
+MANGLE_UNARY_ARITHMETIC_NODE(ArithmeticNegate, "$Vu")
+MANGLE_UNARY_ARITHMETIC_NODE(ArithmeticUnaryPlus, "$Vi")
+
+#undef MANGLE_UNARY_ARITHMETIC_NODE
+
+#define MANGLE_BINARY_ARITHMETIC_NODE(NAME, TAG)                              \
+  ManglingError Remangler::mangle##NAME(Node *node, unsigned int depth) {     \
+    DEMANGLER_ASSERT(node->getNumChildren() == 2, node);                       \
+    RETURN_IF_ERROR(mangle(node->getChild(0), depth + 1));                     \
+    RETURN_IF_ERROR(mangle(node->getChild(1), depth + 1));                     \
+    Buffer << TAG;                                                              \
+    return ManglingError::Success;                                              \
+  }
+
+MANGLE_BINARY_ARITHMETIC_NODE(ArithmeticBitwiseAnd, "$Vb")
+MANGLE_BINARY_ARITHMETIC_NODE(ArithmeticBitwiseOr, "$Vo")
+MANGLE_BINARY_ARITHMETIC_NODE(ArithmeticBitwiseXor, "$Vx")
+MANGLE_BINARY_ARITHMETIC_NODE(ArithmeticLeftShift, "$Vl")
+MANGLE_BINARY_ARITHMETIC_NODE(ArithmeticRightShift, "$Vg")
+MANGLE_BINARY_ARITHMETIC_NODE(ArithmeticMaskingLeftShift, "$Vq")
+MANGLE_BINARY_ARITHMETIC_NODE(ArithmeticMaskingRightShift, "$Vk")
+MANGLE_BINARY_ARITHMETIC_NODE(ArithmeticWrappingAdd, "$Vw")
+MANGLE_BINARY_ARITHMETIC_NODE(ArithmeticWrappingSubtract, "$Vh")
+MANGLE_BINARY_ARITHMETIC_NODE(ArithmeticWrappingMultiply, "$Vp")
+
+#undef MANGLE_BINARY_ARITHMETIC_NODE
 
 ManglingError Remangler::mangleDependentGenericParamValueMarker(Node *node,
                                                                unsigned depth) {

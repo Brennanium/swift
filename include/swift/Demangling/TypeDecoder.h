@@ -1717,8 +1717,8 @@ protected:
         return MAKE_NODE_TYPE_ERROR0(Node,
                                      "integer value where a type is required");
       if (Node->getKind() == NodeKind::Integer)
-        return Builder.createIntegerType((intptr_t)Node->getIndex());
-      return Builder.createNegativeIntegerType((intptr_t)Node->getIndex());
+        return Builder.createIntegerType(Node->getIndex());
+      return Builder.createNegativeIntegerType(Node->getIndex());
 
     case NodeKind::BuiltinBorrow: {
       if (Node->getNumChildren() < 1) {
@@ -1783,9 +1783,9 @@ protected:
     if (node->getKind() == NodeKind::Type && node->getNumChildren() == 1)
       node = node->getChild(0);
     if (node->getKind() == NodeKind::Integer)
-      return Builder.createIntegerType((intptr_t)node->getIndex());
+      return Builder.createIntegerType(node->getIndex());
     if (node->getKind() == NodeKind::NegativeInteger)
-      return Builder.createNegativeIntegerType((intptr_t)node->getIndex());
+      return Builder.createNegativeIntegerType(node->getIndex());
     return decodeMangledType(Node, depth, forRequirement);
   }
 

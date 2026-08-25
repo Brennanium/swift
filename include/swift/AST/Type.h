@@ -176,6 +176,57 @@ enum class ForeignRepresentableKind : uint8_t {
   StaticBridged,
 };
 
+/// The symbolic operations supported in dependent integer generic arguments.
+enum class ArithmeticOperatorKind : uint8_t {
+  // Unary operations.
+  UnaryPlus = 0,
+  Negate = 1,
+  BitwiseNot = 2,
+
+  // Checked arithmetic.
+  Add = 3,
+  Subtract = 4,
+  Multiply = 5,
+  Divide = 6,
+  Remainder = 7,
+
+  // Wrapping arithmetic.
+  WrappingAdd = 8,
+  WrappingSubtract = 9,
+  WrappingMultiply = 10,
+
+  // Bitwise operations.
+  BitwiseAnd = 11,
+  BitwiseOr = 12,
+  BitwiseXor = 13,
+
+  // Shift operations.
+  LeftShift = 14,
+  RightShift = 15,
+  MaskingLeftShift = 16,
+  MaskingRightShift = 17,
+};
+
+/// Properties shared by every representation of a dependent arithmetic
+/// operator. Keep the semantic classification here rather than teaching each
+/// client its own list of operators.
+struct ArithmeticOperatorInfo {
+  ArithmeticOperatorKind kind;
+  StringRef spelling;
+  StringRef mangling;
+  bool isUnary;
+  bool usesFixedWidthSemantics;
+  bool isBitwiseOrShift;
+};
+
+const ArithmeticOperatorInfo &
+getArithmeticOperatorInfo(ArithmeticOperatorKind kind);
+
+/// Returns the dependent-arithmetic operator with this source spelling, if
+/// the spelling and arity are supported by the symbolic arithmetic language.
+std::optional<ArithmeticOperatorKind>
+getArithmeticOperatorKind(StringRef spelling, bool isUnary);
+
 /// An enum wrapper used to describe the variance position of a type within
 /// another type. For example, a function type is covariant in its result type;
 /// therefore, the result type is in covariant position relative to the function

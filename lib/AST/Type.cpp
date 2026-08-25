@@ -25,6 +25,7 @@
 #include "swift/AST/Decl.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/GenericEnvironment.h"
+#include "swift/AST/IntegerArithmetic.h"
 #include "swift/AST/LazyResolver.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/PackConformance.h"
@@ -55,6 +56,65 @@
 #include <functional>
 #include <iterator>
 using namespace swift;
+
+namespace {
+
+const ArithmeticOperatorInfo ArithmeticOperatorInfos[] = {
+    // Unary operations.
+    {ArithmeticOperatorKind::UnaryPlus, "+", "$Vi", true, true, false},
+    {ArithmeticOperatorKind::Negate, "-", "$Vu", true, true, false},
+
+    {ArithmeticOperatorKind::BitwiseNot, "~", "$Vn", true, true, true},
+
+    // Checked arithmetic.
+    {ArithmeticOperatorKind::Add, "+", "$Va", false, false, false},
+    {ArithmeticOperatorKind::Subtract, "-", "$Vs", false, false, false},
+    {ArithmeticOperatorKind::Multiply, "*", "$Vm", false, false, false},
+    {ArithmeticOperatorKind::Divide, "/", "$Vd", false, false, false},
+    {ArithmeticOperatorKind::Remainder, "%", "$Vr", false, false, false},
+
+    // Wrapping arithmetic.
+    {ArithmeticOperatorKind::WrappingAdd, "&+", "$Vw", false, true, false},
+    {ArithmeticOperatorKind::WrappingSubtract, "&-", "$Vh", false, true,
+     false},
+    {ArithmeticOperatorKind::WrappingMultiply, "&*", "$Vp", false, true,
+     false},
+
+    // Bitwise operations.
+    {ArithmeticOperatorKind::BitwiseAnd, "&", "$Vb", false, true, true},
+    {ArithmeticOperatorKind::BitwiseOr, "|", "$Vo", false, true, true},
+    {ArithmeticOperatorKind::BitwiseXor, "^", "$Vx", false, true, true},
+
+    // Shift operations.
+    {ArithmeticOperatorKind::LeftShift, "<<", "$Vl", false, true, true},
+    {ArithmeticOperatorKind::RightShift, ">>", "$Vg", false, true, true},
+    {ArithmeticOperatorKind::MaskingLeftShift, "&<<", "$Vq", false, true,
+     true},
+    {ArithmeticOperatorKind::MaskingRightShift, "&>>", "$Vk", false, true,
+     true},
+};
+
+static_assert(std::size(ArithmeticOperatorInfos) ==
+              static_cast<unsigned>(ArithmeticOperatorKind::MaskingRightShift) +
+                  1);
+
+} // end anonymous namespace
+
+const ArithmeticOperatorInfo &
+swift::getArithmeticOperatorInfo(ArithmeticOperatorKind kind) {
+  for (const auto &info : ArithmeticOperatorInfos)
+    if (info.kind == kind)
+      return info;
+  llvm_unreachable("invalid arithmetic operator kind");
+}
+
+std::optional<ArithmeticOperatorKind>
+swift::getArithmeticOperatorKind(StringRef spelling, bool isUnary) {
+  for (const auto &info : ArithmeticOperatorInfos)
+    if (info.spelling == spelling && info.isUnary == isUnary)
+      return info.kind;
+  return std::nullopt;
+}
 
 #define TYPE(Id, _) \
   static_assert(IsTriviallyDestructible<Id##Type>::value, \
@@ -344,6 +404,7 @@ bool CanType::isReferenceTypeImpl(CanType type, const GenericSignatureImpl *sig,
   case TypeKind::BuiltinTuple:
   case TypeKind::ErrorUnion:
   case TypeKind::Integer:
+  case TypeKind::Arithmetic:
   case TypeKind::Hidden:
   case TypeKind::BuiltinUnboundGeneric:
   case TypeKind::BuiltinFixedArray:
@@ -2255,6 +2316,21 @@ CanType TypeBase::computeCanonicalType() {
     value.toStringUnsigned(canonicalText);
     Result = IntegerType::get(canonicalText, intTy->isNegative(),
                               intTy->getASTContext());
+    break;
+  }
+  case TypeKind::Arithmetic: {
+    auto *arith = cast<ArithmeticType>(this);
+    Type lhs = arith->getLHS()->getCanonicalType();
+    if (arith->isUnary()) {
+      Result = ArithmeticType::getUnary(lhs, arith->getOperatorKind(),
+                                        lhs->getASTContext())
+                   .getPointer();
+    } else {
+      Type rhs = arith->getRHS()->getCanonicalType();
+      Result = ArithmeticType::get(lhs, rhs, arith->getOperatorKind(),
+                                   lhs->getASTContext())
+                   .getPointer();
+    }
     break;
   }
   }
@@ -4937,6 +5013,7 @@ ReferenceCounting TypeBase::getReferenceCounting() {
   case TypeKind::BuiltinTuple:
   case TypeKind::ErrorUnion:
   case TypeKind::Integer:
+  case TypeKind::Arithmetic:
   case TypeKind::Hidden:
   case TypeKind::BuiltinUnboundGeneric:
   case TypeKind::BuiltinFixedArray:
@@ -5491,6 +5568,150 @@ APInt IntegerType::getValue() const {
                                                 isNegative());
 }
 
+llvm::APInt swift::evaluateIntegerSmartShift(
+    ArithmeticOperatorKind opKind, const APInt &lhs, const APInt &rhs,
+    bool lhsIsSigned, bool rhsIsSigned) {
+  assert((opKind == ArithmeticOperatorKind::LeftShift ||
+          opKind == ArithmeticOperatorKind::RightShift) &&
+         "expected a non-masking shift operator");
+
+  const unsigned resultWidth = lhs.getBitWidth();
+  const unsigned comparisonWidth =
+      std::max(rhs.getBitWidth(), resultWidth + 1);
+  const APInt zero(resultWidth, 0);
+  const APInt overshiftRight =
+      lhsIsSigned ? lhs.ashr(resultWidth - 1) : zero;
+  const APInt bitWidth(comparisonWidth, resultWidth);
+  const APInt shiftValue = rhsIsSigned
+                               ? rhs.sextOrTrunc(comparisonWidth)
+                               : rhs.zextOrTrunc(comparisonWidth);
+
+  auto rightShift = [&](unsigned amount) {
+    return lhsIsSigned ? lhs.ashr(amount) : lhs.lshr(amount);
+  };
+
+  if (!rhsIsSigned || !shiftValue.isNegative()) {
+    if (shiftValue.uge(bitWidth))
+      return opKind == ArithmeticOperatorKind::LeftShift ? zero
+                                                          : overshiftRight;
+
+    unsigned amount = static_cast<unsigned>(shiftValue.getLimitedValue());
+    return opKind == ArithmeticOperatorKind::LeftShift ? lhs.shl(amount)
+                                                        : rightShift(amount);
+  }
+
+  // A negative left shift is a right shift by its magnitude, and vice versa.
+  // Clamp before negating so the minimum signed APInt is handled safely.
+  if (shiftValue.sle(-bitWidth))
+    return opKind == ArithmeticOperatorKind::LeftShift ? overshiftRight : zero;
+
+  unsigned amount = static_cast<unsigned>((-shiftValue).getLimitedValue());
+  return opKind == ArithmeticOperatorKind::LeftShift ? rightShift(amount)
+                                                      : lhs.shl(amount);
+}
+
+IntegerArithmeticResult swift::evaluateIntegerArithmetic(
+    ArithmeticOperatorKind opKind, const APInt &lhs, const APInt &rhs,
+    bool isSigned, bool detectOverflow) {
+  assert(lhs.getBitWidth() == rhs.getBitWidth());
+
+  bool overflow = false;
+  APInt result;
+  switch (opKind) {
+  case ArithmeticOperatorKind::Add:
+    if (detectOverflow) {
+      if (isSigned)
+        result = lhs.sadd_ov(rhs, overflow);
+      else
+        result = lhs.uadd_ov(rhs, overflow);
+    } else {
+      result = lhs + rhs;
+    }
+    break;
+  case ArithmeticOperatorKind::Subtract:
+    if (detectOverflow) {
+      if (isSigned)
+        result = lhs.ssub_ov(rhs, overflow);
+      else
+        result = lhs.usub_ov(rhs, overflow);
+    } else {
+      result = lhs - rhs;
+    }
+    break;
+  case ArithmeticOperatorKind::Multiply:
+    if (detectOverflow) {
+      if (isSigned)
+        result = lhs.smul_ov(rhs, overflow);
+      else
+        result = lhs.umul_ov(rhs, overflow);
+    } else {
+      result = lhs * rhs;
+    }
+    break;
+  case ArithmeticOperatorKind::WrappingAdd:
+    result = lhs + rhs;
+    break;
+  case ArithmeticOperatorKind::WrappingSubtract:
+    result = lhs - rhs;
+    break;
+  case ArithmeticOperatorKind::WrappingMultiply:
+    result = lhs * rhs;
+    break;
+  case ArithmeticOperatorKind::Divide:
+    if (rhs.isZero()) {
+      overflow = true;
+      result = lhs;
+    } else {
+      result = isSigned ? lhs.sdiv_ov(rhs, overflow) : lhs.udiv(rhs);
+    }
+    break;
+  case ArithmeticOperatorKind::Remainder:
+    if (rhs.isZero()) {
+      overflow = true;
+      result = lhs;
+    } else {
+      if (isSigned)
+        (void)lhs.sdiv_ov(rhs, overflow);
+      result = isSigned ? lhs.srem(rhs) : lhs.urem(rhs);
+    }
+    break;
+  case ArithmeticOperatorKind::BitwiseAnd:
+    result = lhs & rhs;
+    break;
+  case ArithmeticOperatorKind::BitwiseOr:
+    result = lhs | rhs;
+    break;
+  case ArithmeticOperatorKind::BitwiseXor:
+    result = lhs ^ rhs;
+    break;
+  case ArithmeticOperatorKind::LeftShift:
+    result = lhs.shl(static_cast<unsigned>(rhs.getLimitedValue()));
+    break;
+  case ArithmeticOperatorKind::RightShift:
+    result = isSigned ? lhs.ashr(static_cast<unsigned>(rhs.getLimitedValue()))
+                      : lhs.lshr(static_cast<unsigned>(rhs.getLimitedValue()));
+    break;
+  case ArithmeticOperatorKind::MaskingLeftShift: {
+    auto width = lhs.getBitWidth();
+    auto amount = rhs.urem(APInt(rhs.getBitWidth(), width));
+    result = lhs.shl(amount);
+    break;
+  }
+  case ArithmeticOperatorKind::MaskingRightShift: {
+    auto width = lhs.getBitWidth();
+    auto amount = rhs.urem(APInt(rhs.getBitWidth(), width));
+    result = isSigned ? lhs.ashr(amount) : lhs.lshr(amount);
+    break;
+  }
+  case ArithmeticOperatorKind::BitwiseNot:
+  case ArithmeticOperatorKind::UnaryPlus:
+  case ArithmeticOperatorKind::Negate:
+    llvm_unreachable("unary arithmetic operation");
+  }
+
+  return {result, overflow};
+}
+
 SourceLoc swift::extractNearestSourceLoc(Type ty) {
   if (auto nominal = ty->getAnyNominal())
     return extractNearestSourceLoc(nominal);
@@ -5600,6 +5821,10 @@ TypeBase::getMatchingParamKind() {
   }
   
   if (isa<IntegerType>(this)) {
+    return GenericTypeParamKind::Value;
+  }
+
+  if (isa<ArithmeticType>(this)) {
     return GenericTypeParamKind::Value;
   }
   

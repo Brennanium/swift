@@ -20,6 +20,7 @@
 #include "swift/Demangling/ManglingUtils.h"
 #include "swift/Demangling/Punycode.h"
 #include "swift/Strings.h"
+#include <limits>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -1110,6 +1111,7 @@ NodePointer Demangler::demangleTypeAnnotation() {
 NodePointer Demangler::demangleOperator() {
 recur:
   switch (unsigned char c = nextChar()) {
+    case '$': return demangleValueGeneric();
     case 0xFF:
       // A 0xFF byte is used as alignment padding for symbolic references
       // when the platform toolchain has alignment restrictions for the
@@ -1209,8 +1211,6 @@ recur:
       // outlined copy functions. We treat such a suffix as "unmangled suffix".
       pushBack();
       return createNode(Node::Kind::Suffix, consumeAll());
-    case '$':
-      return demangleIntegerType();
     default:
       pushBack();
       return demangleIdentifier();
@@ -4754,6 +4754,32 @@ NodePointer Demangler::demangleMacroExpansion() {
 }
 
 NodePointer Demangler::demangleIntegerType() {
+  // Large integer generic arguments use $B["n"]<digits>_.  The legacy
+  // $["n"]<index>_ form remains unchanged because its Index parser is shared
+  // with many 32-bit mangling components.
+  if (nextIf('B')) {
+    bool isNegative = nextIf('n');
+    uint64_t value = 0;
+    bool sawDigit = false;
+    while (isDigit(peekChar())) {
+      unsigned digit = nextChar() - '0';
+      if (value > (std::numeric_limits<uint64_t>::max() - digit) / 10)
+        return nullptr;
+      value = value * 10 + digit;
+      sawDigit = true;
+    }
+    if (!sawDigit || !nextIf('_'))
+      return nullptr;
+    // NegativeInteger nodes use a two's-complement index. Keep the new
+    // spelling consistent with the legacy $n<index>_ spelling so runtime
+    // metadata lookup, AST decoding, and printing all observe the sign.
+    if (isNegative)
+      value = 0 - value;
+    return createType(createNode(isNegative ? Node::Kind::NegativeInteger
+                                            : Node::Kind::Integer,
+                               value));
+  }
+
   NodePointer integer = nullptr;
 
   switch (peekChar()) {
@@ -4768,4 +4794,117 @@ NodePointer Demangler::demangleIntegerType() {
   }
 
   return createType(integer);
+}
+
+NodePointer Demangler::demangleValueGeneric() {
+  if (nextIf('V')) {
+    switch (nextChar()) {
+    case 'a': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(createWithChildren(Node::Kind::ArithmeticAdd, lhs, rhs));
+    }
+    case 's': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(
+          createWithChildren(Node::Kind::ArithmeticSubtract, lhs, rhs));
+    }
+    case 'm': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(
+          createWithChildren(Node::Kind::ArithmeticMultiply, lhs, rhs));
+    }
+    case 'd': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(
+          createWithChildren(Node::Kind::ArithmeticDivide, lhs, rhs));
+    }
+    case 'r': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(
+          createWithChildren(Node::Kind::ArithmeticRemainder, lhs, rhs));
+    }
+    case 'i': {
+      NodePointer operand = popNode(Node::Kind::Type);
+      return createType(
+          createWithChild(Node::Kind::ArithmeticUnaryPlus, operand));
+    }
+    case 'n': {
+      NodePointer operand = popNode(Node::Kind::Type);
+      return createType(
+          createWithChild(Node::Kind::ArithmeticBitwiseNot, operand));
+    }
+    case 'b': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(
+          createWithChildren(Node::Kind::ArithmeticBitwiseAnd, lhs, rhs));
+    }
+    case 'o': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(
+          createWithChildren(Node::Kind::ArithmeticBitwiseOr, lhs, rhs));
+    }
+    case 'x': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(
+          createWithChildren(Node::Kind::ArithmeticBitwiseXor, lhs, rhs));
+    }
+    case 'l': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(
+          createWithChildren(Node::Kind::ArithmeticLeftShift, lhs, rhs));
+    }
+    case 'g': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(
+          createWithChildren(Node::Kind::ArithmeticRightShift, lhs, rhs));
+    }
+    case 'q': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(createWithChildren(
+          Node::Kind::ArithmeticMaskingLeftShift, lhs, rhs));
+    }
+    case 'k': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(createWithChildren(
+          Node::Kind::ArithmeticMaskingRightShift, lhs, rhs));
+    }
+    case 'u': {
+      NodePointer operand = popNode(Node::Kind::Type);
+      return createType(createWithChild(Node::Kind::ArithmeticNegate, operand));
+    }
+    case 'w': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(
+          createWithChildren(Node::Kind::ArithmeticWrappingAdd, lhs, rhs));
+    }
+    case 'h': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(createWithChildren(
+          Node::Kind::ArithmeticWrappingSubtract, lhs, rhs));
+    }
+    case 'p': {
+      NodePointer rhs = popNode(Node::Kind::Type);
+      NodePointer lhs = popNode(Node::Kind::Type);
+      return createType(createWithChildren(
+          Node::Kind::ArithmeticWrappingMultiply, lhs, rhs));
+    }
+    default:
+      return nullptr;
+    }
+  }
+  return demangleIntegerType();
 }

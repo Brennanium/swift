@@ -1408,12 +1408,18 @@ Type ASTBuilder::createDictionaryType(Type key, Type value) {
   return DictionaryType::get(key, value);
 }
 
-Type ASTBuilder::createIntegerType(intptr_t value) {
+Type ASTBuilder::createIntegerType(uint64_t value) {
   return IntegerType::get(std::to_string(value), /*isNegative*/ false, Ctx);
 }
 
-Type ASTBuilder::createNegativeIntegerType(intptr_t value) {
-  return IntegerType::get(std::to_string(value), /*isNegative*/ true, Ctx);
+Type ASTBuilder::createNegativeIntegerType(uint64_t value) {
+  // Demangling nodes represent a negative integer as its two's-complement
+  // value. Convert that representation back to the positive decimal
+  // magnitude stored by IntegerType. This also handles Int.min without
+  // negating a signed minimum value.
+  uint64_t magnitude = 0 - value;
+  return IntegerType::get(std::to_string(magnitude), /*isNegative*/ true,
+                          Ctx);
 }
 
 Type ASTBuilder::createBuiltinFixedArrayType(Type size, Type element) {

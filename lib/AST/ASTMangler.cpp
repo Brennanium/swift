@@ -63,6 +63,7 @@
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <limits>
 #include <memory>
 
 using namespace swift;
@@ -1889,16 +1890,38 @@ void ASTMangler::appendType(Type type, GenericSignature sig,
     case TypeKind::Integer: {
       auto integer = cast<IntegerType>(tybase);
 
-      appendOperator("$");
-
-      auto value = integer->getValue().getSExtValue();
-
-      if (integer->isNegative()) {
-        appendOperator("n", Index(-value));
+      // The established integer-generic encoding is an Index, whose parser
+      // is intentionally limited to a signed 32-bit value.  Preserve that
+      // spelling for existing symbols, but use an explicit decimal spelling
+      // for larger Int values.  In particular, do not truncate an APInt to
+      // the Mangler::Index's unsigned width before it reaches the mangled
+      // name.
+      uint64_t magnitude;
+      bool isWide = integer->getDigitsText().getAsInteger(10, magnitude) ||
+                    magnitude > std::numeric_limits<int>::max();
+      if (!isWide) {
+        appendOperator("$");
+        if (integer->isNegative())
+          appendOperator("n", Index(static_cast<unsigned>(magnitude)));
+        else
+          appendOperator("", Index(static_cast<unsigned>(magnitude)));
       } else {
-        appendOperator("", Index(value));
+        appendOperator("$B");
+        if (integer->isNegative())
+          appendOperator("n");
+        appendOperator(integer->getDigitsText());
+        appendOperator("_");
       }
 
+      return;
+    }
+
+    case TypeKind::Arithmetic: {
+      auto arithmetic = cast<ArithmeticType>(tybase);
+      appendType(arithmetic->getLHS(), sig, forDecl);
+      if (!arithmetic->isUnary())
+        appendType(arithmetic->getRHS(), sig, forDecl);
+      appendOperator(arithmetic->getMangledOperator());
       return;
     }
 

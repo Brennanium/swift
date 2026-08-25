@@ -6421,7 +6421,17 @@ class TypePrinter : public TypeVisitor<TypePrinter, void, NonRecursivePrintOptio
   void printGenericArgs(ArrayRef<Type> flatArgs) {
     Printer << "<";
     interleave(flatArgs,
-               [&](Type arg) { visit(arg); },
+               [&](Type arg) {
+                 // SE-0531 requires a value-generic expression to be
+                 // parenthesized in a generic argument list.
+                 if (arg->is<ArithmeticType>()) {
+                   Printer << "(";
+                   visit(arg);
+                   Printer << ")";
+                 } else {
+                   visit(arg);
+                 }
+               },
                [&] { Printer << ", "; });
     Printer << ">";
   }
@@ -8346,6 +8356,157 @@ public:
     }
 
     Printer << T->getDigitsText();
+  }
+
+  void visitArithmeticType(ArithmeticType *T,
+                           NonRecursivePrintOptions nrOptions) {
+    if (T->isUnary()) {
+      auto operand = T->getLHS();
+      bool needsParens = operand->is<ArithmeticType>();
+      Printer << T->getOperatorSpelling();
+      if (needsParens)
+        Printer << "(";
+      visit(operand);
+      if (needsParens)
+        Printer << ")";
+      return;
+    }
+
+    auto printOperand = [&](Type operand, bool isRightOperand) {
+      auto *nested = operand->getAs<ArithmeticType>();
+      bool needsParens = false;
+      if (nested) {
+        if (nested->isUnary()) {
+          // Prefix arithmetic binds more tightly than every binary operation
+          // supported by this type printer.
+          needsParens = false;
+        } else if (getArithmeticOperatorInfo(T->getOperatorKind())
+                        .isBitwiseOrShift ||
+                   getArithmeticOperatorInfo(nested->getOperatorKind())
+                       .isBitwiseOrShift) {
+          // The bitwise precedence groups differ from the arithmetic groups.
+          // Parenthesize a nested bitwise tree rather than changing its
+          // structural identity while printing an interface.
+          needsParens = true;
+        } else {
+          switch (T->getOperatorKind()) {
+        case ArithmeticOperatorKind::Add:
+        case ArithmeticOperatorKind::WrappingAdd:
+          // Addition and subtraction have the same precedence. A right-nested
+          // additive expression needs parentheses to preserve the tree.
+          if (isRightOperand) {
+            switch (nested->getOperatorKind()) {
+            case ArithmeticOperatorKind::Add:
+            case ArithmeticOperatorKind::Subtract:
+            case ArithmeticOperatorKind::WrappingAdd:
+            case ArithmeticOperatorKind::WrappingSubtract:
+              needsParens = true;
+              break;
+            case ArithmeticOperatorKind::Multiply:
+            case ArithmeticOperatorKind::Divide:
+            case ArithmeticOperatorKind::Remainder:
+            case ArithmeticOperatorKind::UnaryPlus:
+            case ArithmeticOperatorKind::BitwiseNot:
+            case ArithmeticOperatorKind::Negate:
+            case ArithmeticOperatorKind::BitwiseAnd:
+            case ArithmeticOperatorKind::BitwiseOr:
+            case ArithmeticOperatorKind::BitwiseXor:
+            case ArithmeticOperatorKind::LeftShift:
+            case ArithmeticOperatorKind::RightShift:
+            case ArithmeticOperatorKind::MaskingLeftShift:
+            case ArithmeticOperatorKind::MaskingRightShift:
+            case ArithmeticOperatorKind::WrappingMultiply:
+              break;
+            }
+          }
+          break;
+        case ArithmeticOperatorKind::Subtract:
+        case ArithmeticOperatorKind::WrappingSubtract:
+          // Subtraction is left-associative and not associative, so any
+          // right-nested additive expression needs parentheses.
+          if (isRightOperand) {
+            switch (nested->getOperatorKind()) {
+            case ArithmeticOperatorKind::Add:
+            case ArithmeticOperatorKind::Subtract:
+            case ArithmeticOperatorKind::WrappingAdd:
+            case ArithmeticOperatorKind::WrappingSubtract:
+              needsParens = true;
+              break;
+            case ArithmeticOperatorKind::Multiply:
+            case ArithmeticOperatorKind::Divide:
+            case ArithmeticOperatorKind::Remainder:
+            case ArithmeticOperatorKind::UnaryPlus:
+            case ArithmeticOperatorKind::BitwiseNot:
+            case ArithmeticOperatorKind::Negate:
+            case ArithmeticOperatorKind::BitwiseAnd:
+            case ArithmeticOperatorKind::BitwiseOr:
+            case ArithmeticOperatorKind::BitwiseXor:
+            case ArithmeticOperatorKind::LeftShift:
+            case ArithmeticOperatorKind::RightShift:
+            case ArithmeticOperatorKind::MaskingLeftShift:
+            case ArithmeticOperatorKind::MaskingRightShift:
+            case ArithmeticOperatorKind::WrappingMultiply:
+              break;
+            }
+          }
+          break;
+        case ArithmeticOperatorKind::Multiply:
+        case ArithmeticOperatorKind::Divide:
+        case ArithmeticOperatorKind::Remainder:
+        case ArithmeticOperatorKind::WrappingMultiply:
+          // Multiplication, division, and remainder bind more tightly than
+          // addition and subtraction, and are left-associative.
+          switch (nested->getOperatorKind()) {
+          case ArithmeticOperatorKind::Add:
+          case ArithmeticOperatorKind::Subtract:
+          case ArithmeticOperatorKind::WrappingAdd:
+          case ArithmeticOperatorKind::WrappingSubtract:
+            needsParens = true;
+            break;
+          case ArithmeticOperatorKind::Multiply:
+          case ArithmeticOperatorKind::Divide:
+          case ArithmeticOperatorKind::Remainder:
+          case ArithmeticOperatorKind::UnaryPlus:
+          case ArithmeticOperatorKind::BitwiseNot:
+          case ArithmeticOperatorKind::Negate:
+          case ArithmeticOperatorKind::BitwiseAnd:
+          case ArithmeticOperatorKind::BitwiseOr:
+          case ArithmeticOperatorKind::BitwiseXor:
+          case ArithmeticOperatorKind::LeftShift:
+          case ArithmeticOperatorKind::RightShift:
+          case ArithmeticOperatorKind::MaskingLeftShift:
+          case ArithmeticOperatorKind::MaskingRightShift:
+          case ArithmeticOperatorKind::WrappingMultiply:
+            if (isRightOperand)
+              needsParens = true;
+            break;
+          }
+          break;
+        case ArithmeticOperatorKind::UnaryPlus:
+        case ArithmeticOperatorKind::BitwiseNot:
+        case ArithmeticOperatorKind::Negate:
+        case ArithmeticOperatorKind::BitwiseAnd:
+        case ArithmeticOperatorKind::BitwiseOr:
+        case ArithmeticOperatorKind::BitwiseXor:
+        case ArithmeticOperatorKind::LeftShift:
+        case ArithmeticOperatorKind::RightShift:
+        case ArithmeticOperatorKind::MaskingLeftShift:
+        case ArithmeticOperatorKind::MaskingRightShift:
+          llvm_unreachable("bitwise arithmetic should have been parenthesized");
+          }
+        }
+      }
+
+      if (needsParens)
+        Printer << "(";
+      visit(operand);
+      if (needsParens)
+        Printer << ")";
+    };
+
+    printOperand(T->getLHS(), /*isRightOperand=*/false);
+    Printer << " " << T->getOperatorSpelling() << " ";
+    printOperand(T->getRHS(), /*isRightOperand=*/true);
   }
 
   void visitHiddenType(HiddenType *T, NonRecursivePrintOptions nrOptions) {

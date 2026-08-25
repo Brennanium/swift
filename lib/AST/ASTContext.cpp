@@ -39,6 +39,7 @@
 #include "swift/AST/GenericSignature.h"
 #include "swift/AST/ImportCache.h"
 #include "swift/AST/IndexSubset.h"
+#include "swift/AST/IntegerArithmetic.h"
 #include "swift/AST/KnownProtocols.h"
 #include "swift/AST/LazyResolver.h"
 #include "swift/AST/LocalArchetypeRequirementCollector.h"
@@ -674,6 +675,7 @@ struct ASTContext::Implementation {
   llvm::DenseMap<CanType, SILMoveOnlyWrappedType *> SILMoveOnlyWrappedTypes;
   llvm::FoldingSet<SILBoxType> SILBoxTypes;
   llvm::FoldingSet<IntegerType> IntegerTypes;
+  llvm::FoldingSet<ArithmeticType> ArithmeticTypes;
   llvm::FoldingSet<HiddenType> HiddenTypes;
   llvm::DenseMap<CanType, StringRef> TypesToHideWhenEmittingModule;
   llvm::DenseMap<BuiltinIntegerWidth, BuiltinIntegerType*> BuiltinIntegerTypes;
@@ -4052,6 +4054,206 @@ IntegerType *IntegerType::get(StringRef value, bool isNegative,
 
   ctx.getImpl().IntegerTypes.InsertNode(intType, insertPos);
   return intType;
+}
+
+static unsigned getTargetIntBitWidth(const ASTContext &ctx) {
+  if (ctx.LangOpts.Target.isArch16Bit())
+    return 16;
+  if (ctx.LangOpts.Target.isArch32Bit())
+    return 32;
+  if (ctx.LangOpts.Target.isArch64Bit())
+    return 64;
+  llvm_unreachable("unsupported target pointer width");
+}
+
+Type ArithmeticType::get(Type lhs, Type rhs, ArithmeticOperatorKind opKind,
+                         const ASTContext &ctx) {
+  auto buildRawArithmeticType = [&](Type rawLHS, Type rawRHS) -> Type {
+    llvm::FoldingSetNodeID id;
+    ArithmeticType::Profile(id, rawLHS, rawRHS, opKind);
+
+    void *insertPos;
+    if (auto *existing =
+            ctx.getImpl().ArithmeticTypes.FindNodeOrInsertPos(id, insertPos))
+      return existing;
+
+    RecursiveTypeProperties properties = rawLHS->getRecursiveProperties();
+    if (rawRHS)
+      properties |= rawRHS->getRecursiveProperties();
+    if (properties.isSolverAllocated()) {
+      bool isCanonical = rawLHS->isCanonical() &&
+                         (!rawRHS || rawRHS->isCanonical());
+      return new (ctx, AllocationArena::ConstraintSolver)
+          ArithmeticType(rawLHS, rawRHS, opKind, isCanonical ? &ctx : nullptr,
+                         properties);
+    }
+
+    bool isCanonical = rawLHS->isCanonical() &&
+                       (!rawRHS || rawRHS->isCanonical());
+    auto *arith = new (ctx, getArena(properties))
+        ArithmeticType(rawLHS, rawRHS, opKind, isCanonical ? &ctx : nullptr,
+                       properties);
+    ctx.getImpl().ArithmeticTypes.InsertNode(arith, insertPos);
+    return arith;
+  };
+
+  if (getArithmeticOperatorInfo(opKind).isUnary) {
+    assert(!rhs && "unary arithmetic operation has no right operand");
+    return buildRawArithmeticType(lhs, rhs);
+  }
+
+  // Fold a wholly concrete subtree when its result is representable as Int.
+  // Integer generic parameters are Int values, not arbitrary-precision
+  // integers. If a subtree overflows Int, retain its ordered tree so IRGen can
+  // perform the checked evaluation and trap.
+  if (auto *lhsInt = lhs->getAs<IntegerType>()) {
+    if (auto *rhsInt = rhs->getAs<IntegerType>()) {
+      auto lhsValue = lhsInt->getValue();
+      auto rhsValue = rhsInt->getValue();
+      if (lhsInt->isNegative())
+        lhsValue = -lhsValue;
+      if (rhsInt->isNegative())
+        rhsValue = -rhsValue;
+
+      const auto &operatorInfo = getArithmeticOperatorInfo(opKind);
+      const auto intWidth = getTargetIntBitWidth(ctx);
+      if (operatorInfo.usesFixedWidthSemantics) {
+        // Bitwise, shift, and wrapping arithmetic use Int's fixed-width
+        // representation. This path is taken after generic substitution as
+        // well as for a directly constructed ArithmeticType, so it must not
+        // use a temporary width derived from the operands' spellings.
+        if (!lhsValue.isSignedIntN(intWidth) ||
+            !rhsValue.isSignedIntN(intWidth))
+          return buildRawArithmeticType(lhs, rhs);
+
+        lhsValue = lhsValue.sextOrTrunc(intWidth);
+        rhsValue = rhsValue.sextOrTrunc(intWidth);
+
+        APInt result;
+        if (opKind == ArithmeticOperatorKind::LeftShift ||
+            opKind == ArithmeticOperatorKind::RightShift) {
+          result = evaluateIntegerSmartShift(opKind, lhsValue, rhsValue,
+                                             /*lhsIsSigned=*/true,
+                                             /*rhsIsSigned=*/true);
+        } else {
+          result = evaluateIntegerArithmetic(
+                       opKind, lhsValue, rhsValue, /*isSigned=*/true,
+                       /*detectOverflow=*/false)
+                       .value;
+        }
+
+        bool isNegative = result.isNegative();
+        if (isNegative)
+          result = -result;
+
+        SmallString<32> resultText;
+        result.toStringUnsigned(resultText);
+        return IntegerType::get(resultText, isNegative, ctx);
+      }
+
+      unsigned width = lhsValue.getSignificantBits() +
+                       rhsValue.getSignificantBits() + 2;
+      if (lhsInt->isNegative())
+        lhsValue = lhsValue.sext(width);
+      else
+        lhsValue = lhsValue.zext(width);
+      if (rhsInt->isNegative())
+        rhsValue = rhsValue.sext(width);
+      else
+        rhsValue = rhsValue.zext(width);
+
+      // Division and remainder retain their runtime trap semantics after
+      // substitution. In particular, `Int.min / -1` and `Int.min % -1`
+      // must not fold to a representable result at this widened precision.
+      if (opKind == ArithmeticOperatorKind::Divide ||
+          opKind == ArithmeticOperatorKind::Remainder) {
+        if (rhsValue.isZero())
+          return buildRawArithmeticType(lhs, rhs);
+
+        auto intWidth = getTargetIntBitWidth(ctx);
+        if (width >= intWidth) {
+          auto min = APInt::getSignedMinValue(intWidth).sext(width);
+          auto minusOne = APInt::getAllOnes(width);
+          if (lhsValue == min && rhsValue == minusOne)
+            return buildRawArithmeticType(lhs, rhs);
+        }
+      }
+
+      auto evaluation = evaluateIntegerArithmetic(
+          opKind, lhsValue, rhsValue, /*isSigned=*/true,
+          /*detectOverflow=*/false);
+      auto result = evaluation.value;
+      if (!result.isSignedIntN(getTargetIntBitWidth(ctx)))
+        return buildRawArithmeticType(lhs, rhs);
+
+      bool isNegative = result.isNegative();
+      if (isNegative)
+        result = -result;
+
+      SmallString<32> resultText;
+      result.toStringUnsigned(resultText);
+      return IntegerType::get(resultText, isNegative, ctx);
+    }
+  }
+
+  return buildRawArithmeticType(lhs, rhs);
+}
+
+Type ArithmeticType::getUnary(Type operand, ArithmeticOperatorKind opKind,
+                              const ASTContext &ctx) {
+  assert(getArithmeticOperatorInfo(opKind).isUnary &&
+         "invalid unary arithmetic operation");
+
+  if (auto *integer = operand->getAs<IntegerType>()) {
+    APInt value = integer->getValue();
+    if (integer->isNegative())
+      value = -value;
+
+    auto width = getTargetIntBitWidth(ctx);
+    if (!value.isSignedIntN(width))
+      return get(operand, Type(), opKind, ctx);
+
+    value = value.sextOrTrunc(width);
+    APInt result;
+    switch (opKind) {
+    case ArithmeticOperatorKind::UnaryPlus:
+      result = value;
+      break;
+    case ArithmeticOperatorKind::BitwiseNot:
+      result = ~value;
+      break;
+    case ArithmeticOperatorKind::Negate:
+      if (value.isMinSignedValue())
+        return get(operand, Type(), opKind, ctx);
+      result = -value;
+      break;
+    case ArithmeticOperatorKind::Add:
+    case ArithmeticOperatorKind::Subtract:
+    case ArithmeticOperatorKind::Multiply:
+    case ArithmeticOperatorKind::Divide:
+    case ArithmeticOperatorKind::Remainder:
+    case ArithmeticOperatorKind::BitwiseAnd:
+    case ArithmeticOperatorKind::BitwiseOr:
+    case ArithmeticOperatorKind::BitwiseXor:
+    case ArithmeticOperatorKind::LeftShift:
+    case ArithmeticOperatorKind::RightShift:
+    case ArithmeticOperatorKind::MaskingLeftShift:
+    case ArithmeticOperatorKind::MaskingRightShift:
+    case ArithmeticOperatorKind::WrappingAdd:
+    case ArithmeticOperatorKind::WrappingSubtract:
+    case ArithmeticOperatorKind::WrappingMultiply:
+      llvm_unreachable("invalid unary arithmetic operation");
+    }
+    bool isNegative = result.isNegative();
+    if (isNegative)
+      result = -result;
+
+    SmallString<32> resultText;
+    result.toStringUnsigned(resultText);
+    return IntegerType::get(resultText, isNegative, ctx);
+  }
+
+  return get(operand, Type(), opKind, ctx);
 }
 
 HiddenType *HiddenType::get(const ASTContext &ctx, StringRef mangledName,

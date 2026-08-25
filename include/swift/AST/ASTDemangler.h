@@ -279,9 +279,9 @@ public:
 
   Type createDictionaryType(Type key, Type value);
 
-  Type createIntegerType(intptr_t value);
+  Type createIntegerType(uint64_t value);
 
-  Type createNegativeIntegerType(intptr_t value);
+  Type createNegativeIntegerType(uint64_t value);
 
   Type createBuiltinFixedArrayType(Type size, Type element);
 

@@ -58,7 +58,7 @@ const uint16_t SWIFTMODULE_VERSION_MAJOR = 0;
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
 /// Don't worry about adhering to the 80-column limit for this line.
-const uint16_t SWIFTMODULE_VERSION_MINOR = 1019; // @cxx attribute
+const uint16_t SWIFTMODULE_VERSION_MINOR = 1020; // dependent integer expression types
 
 /// A standard hash seed used for all string hashes in a serialized module.
 ///
@@ -1633,6 +1633,13 @@ namespace decls_block {
     INTEGER_TYPE,
     BCFixed<1>,   // is negative?
     BCBlob        // integer value text
+  );
+
+  TYPE_LAYOUT(ArithmeticTypeLayout,
+    ARITHMETIC_TYPE,
+    TypeIDField,  // lhs type
+    TypeIDField,  // rhs type
+    BCFixed<5>    // operator kind
   );
 
   TYPE_LAYOUT(HiddenTypeLayout,

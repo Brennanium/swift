@@ -8478,6 +8478,72 @@ Expected<Type> DESERIALIZE_TYPE(INTEGER_TYPE)(ModuleFile &MF,
   return IntegerType::get(blobData, isNegative, ctx);
 }
 
+static std::optional<ArithmeticOperatorKind>
+decodeRawArithmeticOperatorKind(uint8_t kind) {
+  switch (kind) {
+  case static_cast<uint8_t>(ArithmeticOperatorKind::UnaryPlus):
+    return ArithmeticOperatorKind::UnaryPlus;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::Negate):
+    return ArithmeticOperatorKind::Negate;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::BitwiseNot):
+    return ArithmeticOperatorKind::BitwiseNot;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::Add):
+    return ArithmeticOperatorKind::Add;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::Subtract):
+    return ArithmeticOperatorKind::Subtract;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::Multiply):
+    return ArithmeticOperatorKind::Multiply;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::Divide):
+    return ArithmeticOperatorKind::Divide;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::Remainder):
+    return ArithmeticOperatorKind::Remainder;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::WrappingAdd):
+    return ArithmeticOperatorKind::WrappingAdd;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::WrappingSubtract):
+    return ArithmeticOperatorKind::WrappingSubtract;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::WrappingMultiply):
+    return ArithmeticOperatorKind::WrappingMultiply;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::BitwiseAnd):
+    return ArithmeticOperatorKind::BitwiseAnd;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::BitwiseOr):
+    return ArithmeticOperatorKind::BitwiseOr;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::BitwiseXor):
+    return ArithmeticOperatorKind::BitwiseXor;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::LeftShift):
+    return ArithmeticOperatorKind::LeftShift;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::RightShift):
+    return ArithmeticOperatorKind::RightShift;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::MaskingLeftShift):
+    return ArithmeticOperatorKind::MaskingLeftShift;
+  case static_cast<uint8_t>(ArithmeticOperatorKind::MaskingRightShift):
+    return ArithmeticOperatorKind::MaskingRightShift;
+  default:
+    return std::nullopt;
+  }
+}
+
+Expected<Type> DESERIALIZE_TYPE(ARITHMETIC_TYPE)(
+    ModuleFile &MF, SmallVectorImpl<uint64_t> &scratch, StringRef blobData) {
+  auto &ctx = MF.getContext();
+  TypeID lhsID;
+  TypeID rhsID;
+  unsigned rawOperator;
+  decls_block::ArithmeticTypeLayout::readRecord(scratch, lhsID, rhsID,
+                                                rawOperator);
+
+  Type lhs;
+  Type rhs;
+  SET_OR_RETURN_ERROR(lhs, MF.getTypeChecked(lhsID))
+  SET_OR_RETURN_ERROR(rhs, MF.getTypeChecked(rhsID))
+
+  auto op = decodeRawArithmeticOperatorKind(rawOperator);
+  if (!op)
+    return MF.diagnoseFatal();
+  if (getArithmeticOperatorInfo(*op).isUnary)
+    return ArithmeticType::getUnary(lhs, *op, ctx);
+  return ArithmeticType::get(lhs, rhs, *op, ctx);
+}
+
 Expected<Type> DESERIALIZE_TYPE(HIDDEN_TYPE)(ModuleFile &MF,
                                              SmallVectorImpl<uint64_t> &scratch,
                                              StringRef blobData) {

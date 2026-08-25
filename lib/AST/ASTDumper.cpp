@@ -6964,6 +6964,16 @@ namespace {
       printFoot();
     }
 
+    void visitArithmeticType(ArithmeticType *T, Label label) {
+      printCommon("arithmetic_type", label);
+      printFieldQuoted(T->getOperatorSpelling(),
+                       Label::always("operator"), IdentifierColor);
+      printRec(T->getLHS(), Label::optional("lhs"));
+      if (!T->isUnary())
+        printRec(T->getRHS(), Label::optional("rhs"));
+      printFoot();
+    }
+
     void visitHiddenType(HiddenType *T, Label label) {
       printCommon("hidden_type", label);
       printFieldQuoted(T->getMangledName(), Label::always("mangled_name"),
