@@ -148,8 +148,9 @@ func foldedUnaryBitwiseConstant<let n: Int, T>(
 }
 // CHECK-LABEL: "foldedUnaryBitwiseConstant(_:)" "<n : Int, T>" interface_type="<let n : Int, T> (Vector<n, T>) -> Vector<(n ^ -1), T>"
 
-// Complete SE-0531 subexpressions retain Swift's smart-shift semantics before
-// they are connected to the dependent part of the expression.
+// Complete SE-0531 literal-expression subexpressions retain Swift's
+// smart-shift semantics before they are connected to the dependent part of the
+// expression.
 func foldedNegativeSmartShift<let n: Int, T>(
   _ value: Vector<n, T>
 ) -> Vector<(n + (8 << -1)), T> {
@@ -381,19 +382,19 @@ func subtractLiteralSubexpression<let n: Int, T>(
 }
 // CHECK-LABEL: "subtractLiteralSubexpression(_:)" "<n : Int, T>" interface_type="<let n : Int, T> (Vector<n, T>) -> Vector<(n - 5), T>"
 
-func fullyFoldedSE0531Subexpression<let n: Int, T>(
+func fullyFoldedLiteralExpressionSubexpression<let n: Int, T>(
   _ value: Vector<n, T>
 ) -> Vector<(n + ((1 << 4) - 3)), T> {
   Vector()
 }
-// CHECK-LABEL: "fullyFoldedSE0531Subexpression(_:)" "<n : Int, T>" interface_type="<let n : Int, T> (Vector<n, T>) -> Vector<(n + 13), T>"
+// CHECK-LABEL: "fullyFoldedLiteralExpressionSubexpression(_:)" "<n : Int, T>" interface_type="<let n : Int, T> (Vector<n, T>) -> Vector<(n + 13), T>"
 
-func fullyFoldedSE0531IntegerOperators<let n: Int, T>(
+func fullyFoldedLiteralExpressionIntegerOperators<let n: Int, T>(
   _ value: Vector<n, T>
 ) -> Vector<(n + ((((1 &<< 4) >> 1) | ((9 % 4) & 3)) ^ 2)), T> {
   Vector()
 }
-// CHECK-LABEL: "fullyFoldedSE0531IntegerOperators(_:)" "<n : Int, T>" interface_type="<let n : Int, T> (Vector<n, T>) -> Vector<(n + 11), T>"
+// CHECK-LABEL: "fullyFoldedLiteralExpressionIntegerOperators(_:)" "<n : Int, T>" interface_type="<let n : Int, T> (Vector<n, T>) -> Vector<(n + 11), T>"
 
 func localValueShadowsGenericParameter<let n: Int>(
   _ genericValue: Vector<n, Int>

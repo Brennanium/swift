@@ -42,6 +42,7 @@
 #include "swift/AST/LookupKinds.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/NameLookup.h"
+#include "swift/AST/OperatorNameLookup.h"
 #include "swift/AST/PackExpansionMatcher.h"
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/PrettyStackTrace.h"
@@ -6022,8 +6023,8 @@ static SourceLoc findClosureExpr(Expr *expr) {
   return closureFinder.foundLoc;
 }
 
-/// Lower the deliberately small dependent subset of literal expressions that
-/// V1 supported.  This runs before ordinary expression type checking because
+/// Lower the deliberately small dependent subset of literal expressions. This
+/// runs before ordinary expression type checking because
 /// generic value parameters are represented as type values in the AST; they
 /// are not runtime `Int` expressions that the literal-expression folder can
 /// evaluate.
@@ -6039,9 +6040,47 @@ static StringRef getArithmeticOperatorName(Expr *expr) {
   return {};
 }
 
-/// Avoid speculatively folding an entirely concrete argument here. Those
-/// expressions belong to SE-0531's normal generic-argument path, including
-/// its diagnostics. This lowering is only needed when a value generic
+/// Before generic arguments are type-checked, infix expressions are sequences
+/// whose odd elements are unresolved operator references. Reject an arithmetic
+/// operator when one of its declarations uses a non-stdlib precedence group.
+static Expr *findLocallyAlteredArithmeticOperator(Expr *expr,
+                                                   DeclContext *dc) {
+  if (auto *paren = dyn_cast<ParenExpr>(expr))
+    return findLocallyAlteredArithmeticOperator(paren->getSubExpr(), dc);
+  if (auto *unary = dyn_cast<PrefixUnaryExpr>(expr))
+    return findLocallyAlteredArithmeticOperator(unary->getOperand(), dc);
+
+  auto *sequence = dyn_cast<SequenceExpr>(expr);
+  if (!sequence)
+    return nullptr;
+
+  for (auto index : indices(sequence->getElements())) {
+    auto *element = sequence->getElements()[index];
+    if (index % 2 == 0) {
+      if (auto *invalid = findLocallyAlteredArithmeticOperator(element, dc))
+        return invalid;
+      continue;
+    }
+
+    auto *operatorRef = dyn_cast<UnresolvedDeclRefExpr>(element);
+    if (!operatorRef || !getArithmeticOperatorKind(
+                            operatorRef->getName().getBaseIdentifier().str(),
+                            /*isUnary=*/false))
+      continue;
+
+    for (auto *operatorDecl :
+         dc->lookupInfixOperator(operatorRef->getName().getBaseIdentifier()))
+      if (!operatorDecl->getPrecedenceGroup()
+               ->getModuleContext()
+               ->isStdlibModule())
+        return operatorRef;
+  }
+  return nullptr;
+}
+
+/// Avoid speculatively folding an entirely concrete argument here. A SE-0531
+/// literal expression follows the normal generic-argument path, including its
+/// diagnostics. This lowering is only needed when a value generic
 /// parameter leaves a symbolic remainder.
 static bool containsValueGenericParameterReference(Expr *expr,
                                                     DeclContext *dc) {
@@ -6139,7 +6178,7 @@ resolveDependentArithmeticExpr(Expr *expr, DeclContext *dc,
     if (auto *unresolved = dyn_cast<UnresolvedDeclRefExpr>(operand)) {
       // Expression lookup must take precedence over the type-oriented lookup
       // used to find an enclosing value generic parameter. A local `let` may
-      // shadow that parameter and retains SE-0531's normal folding behavior.
+      // shadow that parameter and retains normal literal-expression folding.
       auto valueLookup = TypeChecker::lookupUnqualified(
           dc, unresolved->getName(), unresolved->getLoc());
       if (valueLookup.size() == 1) {
@@ -6262,10 +6301,10 @@ resolveDependentArithmeticExpr(Expr *expr, DeclContext *dc,
 
     auto *binary = dyn_cast<BinaryExpr>(operand);
     if (!binary) {
-      // SE-0531 permits references to locally-resolved `let` bindings when
-      // their initializers fold to an integer literal. Type-check only this
-      // concrete operand, then delegate its evaluation to the existing
-      // literal-expression folder.
+      // A SE-0531 literal expression may reference a locally resolved `let`
+      // binding when its initializer folds to an integer literal. Type-check
+      // only this concrete operand, then delegate its evaluation to the
+      // existing literal-expression folder.
       Expr *concreteExpr = operand;
       if (concreteExpr->getType().isNull() &&
           !TypeChecker::typeCheckExpression(
@@ -6292,9 +6331,10 @@ resolveDependentArithmeticExpr(Expr *expr, DeclContext *dc,
       return std::nullopt;
     }
 
-    // A subtree with no value-generic parameter belongs entirely to SE-0531.
-    // Type-check and fold it before reconnecting it to the symbolic portion of
-    // the expression, so `n + (offset * scale)` becomes `n + 15`.
+    // A subtree with no value-generic parameter is a SE-0531 literal
+    // expression. Type-check and fold it before reconnecting it to the
+    // symbolic portion of the expression, so `n + (offset * scale)` becomes
+    // `n + 15`.
     if (!lhs->isDependent && !rhs->isDependent) {
       auto operatorName = getArithmeticOperatorName(binary->getFn());
       auto *operatorRef = new (dc->getASTContext()) UnresolvedDeclRefExpr(
@@ -6357,9 +6397,9 @@ resolveDependentArithmeticExpr(Expr *expr, DeclContext *dc,
     }
 
     // Resolve the operator with representative Int operands before lowering
-    // the expression. This follows SE-0531: only a selected standard-library
-    // integer operator participates, never a user-defined overload that
-    // happens to use the same spelling.
+    // the expression. As for SE-0531 literal expressions, only a selected
+    // standard-library integer operator participates, never a user-defined
+    // overload that happens to use the same spelling.
     auto &ctx = dc->getASTContext();
     auto *lhsLiteral = IntegerLiteralExpr::createFromUnsigned(
         ctx, 0, binary->getLHS()->getLoc());
@@ -6437,6 +6477,18 @@ NeverNullType TypeResolver::resolveGenericArgumentExprTypeRepr(
       return failedToResolveValue(diag::nonliteral_integer_generic_value);
   }
 
+  if (auto *operatorExpr =
+          findLocallyAlteredArithmeticOperator(originalValueExpr, dc)) {
+    repr->setArgExpr(new (getASTContext()) ErrorExpr(
+        originalValueExpr->getSourceRange(), ErrorType::get(getASTContext()),
+        originalValueExpr));
+    diagnoseInvalid(
+        repr, operatorExpr->getLoc(),
+        diag::integer_generic_expr_operator_precedence_not_supported,
+        getArithmeticOperatorName(operatorExpr));
+    return ErrorType::get(getASTContext());
+  }
+
   // We have already attempted to resolve this TypeRepr
   if (repr->failedToResolve())
     return ErrorType::get(getASTContext());
@@ -6445,9 +6497,9 @@ NeverNullType TypeResolver::resolveGenericArgumentExprTypeRepr(
   else if (auto *intLitExpr = repr->getAsResolvedIntegerLiteralExpr())
     return resolveIntegerLiteralExpr(intLitExpr);
 
-  // Let SE-0531 continue to own all concrete expressions. Only expressions
-  // that retain a generic value parameter are lowered into the V1 symbolic
-  // representation.
+  // Let the literal-expression implementation handle all concrete
+  // expressions. Only expressions that retain a generic value parameter are
+  // lowered into the structural dependent-integer expression representation.
   Expr *unsupportedArithmeticOperator;
   Expr *unsupportedArithmeticOperand;
   Expr *unsupportedArithmeticDivisor;

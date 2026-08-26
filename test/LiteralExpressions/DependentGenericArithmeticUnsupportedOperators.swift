@@ -4,7 +4,8 @@
 
 struct Vector<let N: Int, T> {}
 
-// Division and remainder require a nonzero divisor that folds through SE-0531.
+// Division and remainder require a nonzero divisor that folds as a SE-0531
+// literal expression.
 
 func rejectsDependentDivisionDivisor<let n: Int, let m: Int, T>(
   _ value: Vector<n, T>, _ divisor: Vector<m, T>
@@ -36,9 +37,9 @@ func acceptsNestedShift<let n: Int, let m: Int, T>(
   Vector()
 }
 
-// By contrast, a complete concrete subtree continues through SE-0531's
+// By contrast, a complete concrete subtree continues through the SE-0531
 // literal-expression folder before it is combined with the symbolic '+'.
-func acceptsConcreteSE0531Subexpression<let n: Int, T>(
+func acceptsConcreteLiteralExpressionSubexpression<let n: Int, T>(
   _ value: Vector<n, T>
 ) -> Vector<(n + (((1 << 5) / 2) - (7 % 3))), T> {
   Vector()

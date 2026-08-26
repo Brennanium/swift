@@ -4,7 +4,8 @@
 
 struct Vector<let N: Int, T> {}
 
-// A wholly concrete SE-0531 subtree folds before structural comparison.
+// A wholly concrete SE-0531 literal-expression subtree folds before
+// structural comparison.
 func equivalentFoldedLiteralRequirement<let n: Int, T>(
   _ value: Vector<(n + (2 + 3)), T>
 ) where Vector<(n + 5), T> == Vector<(n + (2 + 3)), T> { // expected-warning {{same-type requirement is redundant; both sides are already equivalent}}
@@ -38,7 +39,8 @@ func equivalentFoldedUnaryNegateRequirement<let n: Int, T>(
 }
 
 // Prefix unary syntax must retain the redundant-requirement warning even
-// though SE-0531 folds the concrete expression to an integer literal.
+// though a SE-0531 literal expression folds the concrete expression to an
+// integer literal.
 func equivalentFoldedUnaryPlusRequirement<T>(
   _ value: Vector<3, T>
 ) where Vector<(+3), T> == Vector<3, T> { // expected-warning {{same-type requirement is redundant; both sides are already equivalent}}

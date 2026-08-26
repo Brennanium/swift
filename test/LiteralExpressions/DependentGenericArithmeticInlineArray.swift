@@ -1,6 +1,7 @@
 // Integration coverage for dependent arithmetic used as an InlineArray count.
-// Concrete InlineArray literal-expression folding lives in the SE-0531 tests;
-// this file covers the symbolic remainder that those tests cannot exercise.
+// Concrete InlineArray literal-expression folding lives in the existing
+// literal-expression tests; this file covers the symbolic remainder that
+// those tests cannot exercise.
 // REQUIRES: swift_feature_LiteralExpressions
 // RUN: %target-typecheck-verify-swift -disable-availability-checking -enable-experimental-feature LiteralExpressions
 // RUN: %target-swift-frontend -emit-sil -o /dev/null %s -disable-availability-checking -enable-experimental-feature LiteralExpressions

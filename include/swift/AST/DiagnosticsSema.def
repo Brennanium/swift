@@ -9179,6 +9179,8 @@ ERROR(nonliteral_integer_expr_generic_value,none,
       "generic value must be an integer literal expression", ())
 ERROR(integer_generic_expr_closure_not_supported,none,
       "closures are not supported in generic value literal expressions", ())
+ERROR(integer_generic_expr_operator_precedence_not_supported,none,
+      "operator '%0' in an integer generic argument cannot use locally altered precedence or associativity", (StringRef))
 ERROR(dependent_integer_generic_operator_not_supported,none,
       "operator '%0' is not supported in dependent generic value expressions", (StringRef))
 ERROR(dependent_integer_generic_divisor_must_be_nonzero_constant,none,

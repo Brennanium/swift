@@ -1,5 +1,5 @@
-// Diagnostic behavior for SE-0531 constant references within dependent
-// integer-generic arithmetic.
+// Diagnostic behavior for SE-0531 literal-expression constant references
+// within dependent integer-generic arithmetic.
 // REQUIRES: swift_feature_LiteralExpressions
 // RUN: %target-typecheck-verify-swift -package-name LiteralExpressionsTest -disable-availability-checking -enable-experimental-feature LiteralExpressions
 
@@ -28,7 +28,8 @@ struct Replaceable {
 }
 
 // =============================================================================
-// Accepted SE-0531 references fold before the symbolic expression is formed.
+// Accepted references in SE-0531 literal expressions fold before the symbolic
+// expression is formed.
 // =============================================================================
 
 func acceptsPrivateConstant<let n: Int, T>(
@@ -44,8 +45,9 @@ func acceptsInternalConstant<let n: Int, T>(
 }
 
 // =============================================================================
-// Rejected references retain the SE-0531 diagnostic and generic-argument
-// follow-up, rather than becoming an unsupported symbolic operand.
+// Rejected references retain the SE-0531 literal-expression diagnostic and
+// generic-argument follow-up, rather than becoming an unsupported symbolic
+// operand.
 // =============================================================================
 
 func rejectsPackageConstant<let n: Int, T>(
