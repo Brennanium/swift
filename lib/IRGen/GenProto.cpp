@@ -100,6 +100,23 @@ using namespace irgen;
 
 namespace {
 
+/// Arithmetic generic expressions are compile-time value expressions. Map
+/// them to the runtime Int type for metadata and witness-table lookup.
+static CanType mapArithmeticToInt(ASTContext &context, CanType type) {
+  if (!Type(type).findIf(
+          [](Type ty) { return isa<ArithmeticType>(ty.getPointer()); }))
+    return type;
+
+  auto intTy = context.getIntType()->getCanonicalType();
+  Type mapped = Type(type).transformRec([&](TypeBase *ty)
+                                             -> std::optional<Type> {
+    if (isa<ArithmeticType>(ty))
+      return Type(intTy);
+    return std::nullopt;
+  });
+  return mapped->getCanonicalType();
+}
+
 /// A class for computing how to pass arguments to a polymorphic
 /// function.  The subclasses of this are the places which need to
 /// be updated if the convention changes.
@@ -115,17 +132,8 @@ protected:
 
   FulfillmentMap Fulfillments;
 
-  /// Arithmetic generic expressions are compile-time value expressions. Map
-  /// them to the runtime Int type for metadata and witness-table lookup.
   CanType mapArithmeticToInt(CanType type) const {
-    auto intTy = IGM.Context.getIntType()->getCanonicalType();
-    Type mapped = Type(type).transformRec([&](TypeBase *ty)
-                                               -> std::optional<Type> {
-      if (isa<ArithmeticType>(ty))
-        return Type(intTy);
-      return std::nullopt;
-    });
-    return mapped->getCanonicalType();
+    return ::mapArithmeticToInt(IGM.Context, type);
   }
 
   GenericSignature::RequiredProtocols getRequiredProtocols(Type t) {
@@ -4255,15 +4263,7 @@ irgen::emitGenericRequirementFromSubstitutions(IRGenFunction &IGF,
   CanType depTy = requirement.getTypeParameter();
   CanType argType = depTy.subst(subs)->getCanonicalType();
 
-  // Arithmetic generic expressions use Int metadata at runtime.
-  auto intTy = IGF.IGM.Context.getIntType()->getCanonicalType();
-  argType = Type(argType)
-                .transformRec([&](TypeBase *ty) -> std::optional<Type> {
-                  if (isa<ArithmeticType>(ty))
-                    return Type(intTy);
-                  return std::nullopt;
-                })
-                ->getCanonicalType();
+  argType = mapArithmeticToInt(IGF.IGM.Context, argType);
 
   // A value-generic argument is passed as its runtime Int value. Evaluate the
   // symbolic arithmetic tree using the values supplied by the caller.
