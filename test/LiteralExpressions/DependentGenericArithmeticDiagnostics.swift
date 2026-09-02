@@ -3,7 +3,7 @@
 // REQUIRES: swift_feature_LiteralExpressions
 // RUN: %target-typecheck-verify-swift -package-name LiteralExpressionsTest -disable-availability-checking -enable-experimental-feature LiteralExpressions
 
-struct Vector<let N: Int, T> {}
+struct Vector<let N: Int, T> {} // expected-note {{arguments to generic parameter 'N' ('5' and 'n + 1') are expected to be equal}}
 
 private let privateConstant = 2
 internal let internalConstant = 3
@@ -104,4 +104,19 @@ func rejectsDynamicStaticConstant<let n: Int, T>(
 ) -> Vector<(n + Replaceable.value), T> { // expected-error {{generic value must be an integer literal expression}}
   // expected-error@-1 {{unable to resolve variable reference in a literal expression}}
   Vector()
+}
+
+// Matching is structural, not reverse arithmetic inference: a concrete
+// Vector<5, _> cannot establish which value satisfies `n + 1 == 5`.
+func requiresSymbolicPredecessor<let n: Int>(
+  _ value: Vector<(n + 1), UInt8>
+) {
+  _ = value
+}
+// expected-note@-5 {{in call to function 'requiresSymbolicPredecessor'}}
+
+func rejectsReverseArithmeticInference() {
+  requiresSymbolicPredecessor(Vector<5, UInt8>())
+  // expected-error@-1 {{generic parameter 'n' could not be inferred}}
+  // expected-error@-2 {{cannot convert value of type 'Vector<5, UInt8>' to expected argument type 'Vector<(n + 1), UInt8>'}}
 }

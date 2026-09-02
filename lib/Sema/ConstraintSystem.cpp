@@ -1139,6 +1139,17 @@ Type ConstraintSystem::getFixedTypeRecursive(Type type, TypeMatchOptions &flags,
     return getFixedTypeRecursive(simplified, flags, wantRValue);
   }
 
+  // Arithmetic types can contain type variables introduced while opening a
+  // generic function. Once those variables are fixed, rebuild the expression
+  // so ArithmeticType's factory can fold a wholly concrete subtree.
+  if (type->is<ArithmeticType>()) {
+    auto simplified = simplifyType(type);
+    if (simplified.getPointer() == type.getPointer())
+      return type;
+
+    return getFixedTypeRecursive(simplified, flags, wantRValue);
+  }
+
   if (auto typeVar = type->getAs<TypeVariableType>()) {
     if (auto fixed = getFixedType(typeVar))
       return getFixedTypeRecursive(fixed, flags, wantRValue);
