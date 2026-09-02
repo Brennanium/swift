@@ -6125,12 +6125,10 @@ static std::optional<Type>
 resolveDependentArithmeticExpr(Expr *expr, DeclContext *dc,
                                Expr *&unsupportedOperator,
                                Expr *&unsupportedOperand,
-                               Expr *&unsupportedDivisor,
                                Expr *&divisionByZero,
                                bool &failedConstantEvaluation) {
   unsupportedOperator = nullptr;
   unsupportedOperand = nullptr;
-  unsupportedDivisor = nullptr;
   divisionByZero = nullptr;
   failedConstantEvaluation = false;
 
@@ -6366,11 +6364,7 @@ resolveDependentArithmeticExpr(Expr *expr, DeclContext *dc,
     case ArithmeticOperatorKind::Divide:
     case ArithmeticOperatorKind::Remainder: {
       auto *divisor = rhs->type->template getAs<IntegerType>();
-      if (!divisor) {
-        unsupportedDivisor = binary->getRHS();
-        return std::nullopt;
-      }
-      if (divisor->getValue().isZero()) {
+      if (divisor && divisor->getValue().isZero()) {
         divisionByZero = binary->getRHS();
         return std::nullopt;
       }
@@ -6502,13 +6496,12 @@ NeverNullType TypeResolver::resolveGenericArgumentExprTypeRepr(
   // lowered into the structural dependent-integer expression representation.
   Expr *unsupportedArithmeticOperator;
   Expr *unsupportedArithmeticOperand;
-  Expr *unsupportedArithmeticDivisor;
   Expr *arithmeticDivisionByZero;
   bool failedDependentConstantEvaluation;
   if (auto arithmetic = resolveDependentArithmeticExpr(
           originalValueExpr, dc, unsupportedArithmeticOperator,
-          unsupportedArithmeticOperand, unsupportedArithmeticDivisor,
-          arithmeticDivisionByZero, failedDependentConstantEvaluation))
+          unsupportedArithmeticOperand, arithmeticDivisionByZero,
+          failedDependentConstantEvaluation))
     return *arithmetic;
   else if (failedDependentConstantEvaluation)
     return failedToResolveValue(diag::nonliteral_integer_expr_generic_value);
@@ -6519,15 +6512,7 @@ NeverNullType TypeResolver::resolveGenericArgumentExprTypeRepr(
     diagnoseInvalid(repr, arithmeticDivisionByZero->getLoc(),
                     diag::const_divide_by_zero);
     return ErrorType::get(getASTContext());
-  } else if (unsupportedArithmeticDivisor) {
-    repr->setArgExpr(new (getASTContext()) ErrorExpr(
-        originalValueExpr->getSourceRange(), ErrorType::get(getASTContext()),
-        originalValueExpr));
-    diagnoseInvalid(repr, unsupportedArithmeticDivisor->getLoc(),
-                    diag::dependent_integer_generic_divisor_must_be_nonzero_constant);
-    return ErrorType::get(getASTContext());
-  }
-  else if (unsupportedArithmeticOperator) {
+  } else if (unsupportedArithmeticOperator) {
     repr->setArgExpr(new (getASTContext()) ErrorExpr(
         originalValueExpr->getSourceRange(), ErrorType::get(getASTContext()),
         originalValueExpr));

@@ -4,18 +4,15 @@
 
 struct Vector<let N: Int, T> {}
 
-// Division and remainder require a nonzero divisor that folds as a SE-0531
-// literal expression.
-
-func rejectsDependentDivisionDivisor<let n: Int, let m: Int, T>(
+func acceptsDependentDivisionDivisor<let n: Int, let m: Int, T>(
   _ value: Vector<n, T>, _ divisor: Vector<m, T>
-) -> Vector<(n / m), T> { // expected-error {{the divisor in a dependent generic value expression must be a nonzero integer constant expression}}
+) -> Vector<(n / m), T> {
   Vector()
 }
 
-func rejectsDependentRemainderDivisor<let n: Int, let m: Int, T>(
+func acceptsDependentRemainderDivisor<let n: Int, let m: Int, T>(
   _ value: Vector<n, T>, _ divisor: Vector<m, T>
-) -> Vector<(n % m), T> { // expected-error {{the divisor in a dependent generic value expression must be a nonzero integer constant expression}}
+) -> Vector<(n % m), T> {
   Vector()
 }
 

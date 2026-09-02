@@ -445,7 +445,7 @@ let largeMultiplyResult: Vector<10000000000, Int> = multiply(
 // CHECK-LABEL: (pattern_named type="Vector<10000000000, Int>" "largeMultiplyResult")
 
 struct Divide<let n: Int, let m: Int, T> {
-  let value: Vector<(n / m), T> // expected-error {{the divisor in a dependent generic value expression must be a nonzero integer constant expression}}
+  let value: Vector<(n / m), T>
 }
 
 struct NonValueOperand<let n: Int, T> {

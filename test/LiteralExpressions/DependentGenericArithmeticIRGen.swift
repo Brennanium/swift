@@ -27,15 +27,15 @@ func subtract<let n: Int, let m: Int, T>(
   Vector()
 }
 
-func divide<let n: Int, T>(
-  _ value: Vector<n, T>
-) -> Vector<(n / 2), T> {
+func divide<let n: Int, let m: Int, T>(
+  _ lhs: Vector<n, T>, _ rhs: Vector<m, T>
+) -> Vector<(n / m), T> {
   Vector()
 }
 
-func remainder<let n: Int, T>(
-  _ value: Vector<n, T>
-) -> Vector<(n % 3), T> {
+func remainder<let n: Int, let m: Int, T>(
+  _ lhs: Vector<n, T>, _ rhs: Vector<m, T>
+) -> Vector<(n % m), T> {
   Vector()
 }
 
@@ -104,9 +104,13 @@ func wideNegativeLiteral<T>() -> Vector<-3000000000, T> {
 // IR-LABEL: define hidden swiftcc void @"$s{{.*}}subtract{{.*}}"
 // IR: call { i{{32|64}}, i1 } @llvm.ssub.with.overflow.i{{32|64}}
 // IR-LABEL: define hidden swiftcc void @"$s{{.*}}divide{{.*}}"
+// IR: icmp eq i{{32|64}} %m, 0
 // IR: sdiv i{{32|64}}
+// IR: call void @llvm.trap()
 // IR-LABEL: define hidden swiftcc void @"$s{{.*}}remainder{{.*}}"
+// IR: icmp eq i{{32|64}} %m, 0
 // IR: srem i{{32|64}}
+// IR: call void @llvm.trap()
 // IR-LABEL: define hidden swiftcc void @"$s{{.*}}bitwise{{.*}}"
 // IR: and i{{32|64}}
 // IR: xor i{{32|64}}
@@ -142,8 +146,8 @@ func wideNegativeLiteral<T>() -> Vector<-3000000000, T> {
 // DEMANGLE: func add<let n : Int, let m : Int, T>(_ lhs: Vector<n, T>, _ rhs: Vector<m, T>) -> Vector<(n + m), T>
 // DEMANGLE: func multiply<let n : Int, let m : Int, T>(_ lhs: Vector<n, T>, _ rhs: Vector<m, T>) -> Vector<(n * m), T>
 // DEMANGLE: func subtract<let n : Int, let m : Int, T>(_ lhs: Vector<n, T>, _ rhs: Vector<m, T>) -> Vector<(n - m), T>
-// DEMANGLE: func divide<let n : Int, T>(_ value: Vector<n, T>) -> Vector<(n / 2), T>
-// DEMANGLE: func remainder<let n : Int, T>(_ value: Vector<n, T>) -> Vector<(n % 3), T>
+// DEMANGLE: func divide<let n : Int, let m : Int, T>(_ lhs: Vector<n, T>, _ rhs: Vector<m, T>) -> Vector<(n / m), T>
+// DEMANGLE: func remainder<let n : Int, let m : Int, T>(_ lhs: Vector<n, T>, _ rhs: Vector<m, T>) -> Vector<(n % m), T>
 // DEMANGLE: func bitwise<let n : Int, let m : Int, T>(_ lhs: Vector<n, T>, _ rhs: Vector<m, T>) -> Vector<((~n & m) | (n ^ m)), T>
 // DEMANGLE: func unaryPlus<let n : Int, T>(_ value: Vector<n, T>) -> Vector<(+n), T>
 // DEMANGLE: func negate<let n : Int, T>(_ value: Vector<n, T>) -> Vector<(-n), T>

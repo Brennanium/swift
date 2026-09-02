@@ -9183,8 +9183,6 @@ ERROR(integer_generic_expr_operator_precedence_not_supported,none,
       "operator '%0' in an integer generic argument cannot use locally altered precedence or associativity", (StringRef))
 ERROR(dependent_integer_generic_operator_not_supported,none,
       "operator '%0' is not supported in dependent generic value expressions", (StringRef))
-ERROR(dependent_integer_generic_divisor_must_be_nonzero_constant,none,
-      "the divisor in a dependent generic value expression must be a nonzero integer constant expression", ())
 ERROR(dependent_integer_generic_operand_not_supported,none,
       "dependent generic value expressions currently support only integer literals and value generic parameters", ())
 
